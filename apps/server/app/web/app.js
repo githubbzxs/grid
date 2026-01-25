@@ -13,6 +13,7 @@ const els = {
   exEnv: document.getElementById("ex-env"),
   exL1: document.getElementById("ex-l1"),
   exAccount: document.getElementById("ex-account"),
+  btnResolveAccount: document.getElementById("btn-resolve-account"),
   exKeyIndex: document.getElementById("ex-key-index"),
   exApiKey: document.getElementById("ex-api-key"),
   exEthKey: document.getElementById("ex-eth-key"),
@@ -184,6 +185,14 @@ async function saveConfig() {
   els.exEthKey.value = "";
 }
 
+async function resolveAccountIndex() {
+  const env = els.exEnv.value;
+  const l1 = els.exL1.value.trim();
+  if (!l1) throw new Error("请先填写 L1 地址");
+  const resp = await apiFetch("/api/lighter/resolve_account_index", { method: "POST", body: { env, l1_address: l1 } });
+  els.exAccount.value = String(resp.account_index);
+}
+
 function renderBots(bots) {
   const symbols = ["BTC", "ETH", "SOL"];
   const rows = symbols.map((s) => bots[s] || { symbol: s, running: false, started_at: null, last_tick_at: null, message: "" });
@@ -261,6 +270,13 @@ function wire() {
       alert(e.message);
     }
   });
+  els.btnResolveAccount.addEventListener("click", async () => {
+    try {
+      await resolveAccountIndex();
+    } catch (e) {
+      alert(e.message);
+    }
+  });
   els.btnStartAll.addEventListener("click", async () => {
     try {
       await startAll();
@@ -298,4 +314,3 @@ async function loop() {
 
 wire();
 loop();
-

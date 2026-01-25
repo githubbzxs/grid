@@ -14,6 +14,7 @@ from starlette.responses import StreamingResponse
 from app.core.config_store import ConfigStore, default_data_dir
 from app.core.logbus import LogBus
 from app.core.security import decrypt_str, derive_fernet, encrypt_str, new_salt_b64, password_hash_b64, verify_password
+from app.exchanges.lighter.public_api import LighterPublicClient
 from app.services.bot_manager import BotManager
 
 
@@ -26,6 +27,11 @@ class PasswordBody(BaseModel):
 
 class BotSymbolsBody(BaseModel):
     symbols: list[str] = Field(default_factory=list)
+
+
+class ResolveAccountIndexBody(BaseModel):
+    env: str = Field(default="mainnet")
+    l1_address: str = Field(min_length=1, max_length=200)
 
 
 def _session_token(request: Request) -> Optional[str]:
@@ -248,6 +254,23 @@ async def logs_stream(request: Request, _: str = Depends(require_auth)) -> Strea
     return StreamingResponse(request.app.state.logbus.stream(), media_type="text/event-stream")
 
 
+@app.post("/api/lighter/resolve_account_index")
+async def lighter_resolve_account_index(
+    body: ResolveAccountIndexBody,
+    request: Request,
+    _: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    try:
+        client = LighterPublicClient(env=body.env)
+        idx = client.resolve_account_index(body.l1_address)
+    except Exception as exc:
+        request.app.state.logbus.publish(f"lighter.resolve_account_index error={type(exc).__name__}:{exc}")
+        raise HTTPException(status_code=502, detail="查询失败")
+    if idx is None:
+        raise HTTPException(status_code=404, detail="未找到 account_index")
+    return {"account_index": idx}
+
+
 def _get_secret(request: Request, name: str) -> Optional[str]:
     config: Dict[str, Any] = request.app.state.config.read()
     runtime: Dict[str, str] = request.app.state.runtime_secrets
@@ -271,4 +294,3 @@ def _get_secret(request: Request, name: str) -> Optional[str]:
         return decrypt_str(fernet, token)
     except Exception:
         return None
-

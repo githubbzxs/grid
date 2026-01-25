@@ -61,6 +61,10 @@
             <div>
               <label>account_index</label>
               <input id="ex-account" placeholder="可手填，后续会支持自动查询" />
+              <div class="btns" style="margin-top: 8px">
+                <button id="btn-resolve-account">自动查询</button>
+              </div>
+              <div class="hint">会根据 L1 地址调用公开接口查询主账户的 account_index。</div>
             </div>
             <div>
               <label>api_key_index</label>
@@ -126,4 +130,3 @@
     <script src="/static/app.js"></script>
   </body>
 </html>
-
