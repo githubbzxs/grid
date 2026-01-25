@@ -151,6 +151,7 @@ class BotManager:
         self._tasks: Dict[str, asyncio.Task[None]] = {}
         self._status: Dict[str, BotStatus] = {}
         self._lock = asyncio.Lock()
+        self._reduce_mode: Dict[str, bool] = {}
 
     async def start(self, symbol: str, trader: Trader) -> None:
         symbol = symbol.upper()
@@ -239,6 +240,36 @@ class BotManager:
                 mid = (bid + ask) / 2
                 center = (mid / step).to_integral_value(rounding=ROUND_HALF_UP) * step
                 center = _quantize(center, meta.price_decimals, ROUND_HALF_UP)
+
+                reduce_mode = self._reduce_mode.get(symbol, False)
+                reduce_side: Optional[str] = None
+                pos_notional: Optional[Decimal] = None
+                max_pos = _safe_decimal(strat.get("max_position_notional") or 0)
+                reduce_exit = _safe_decimal(strat.get("reduce_position_notional") or 0)
+                reduce_mult = _safe_decimal(strat.get("reduce_order_size_multiplier") or 1)
+                if reduce_mult < 1:
+                    reduce_mult = Decimal(1)
+
+                if max_pos > 0:
+                    if reduce_exit <= 0 or reduce_exit >= max_pos:
+                        reduce_exit = max_pos * Decimal("0.8")
+                    try:
+                        pos_base = await trader.position_base(market_id)
+                        pos_notional = abs(pos_base * mid)
+                        if not reduce_mode and pos_notional >= max_pos:
+                            reduce_mode = True
+                        if reduce_mode and pos_notional <= reduce_exit:
+                            reduce_mode = False
+                        self._reduce_mode[symbol] = reduce_mode
+                        if reduce_mode:
+                            if pos_base > 0:
+                                reduce_side = "ask"
+                            elif pos_base < 0:
+                                reduce_side = "bid"
+                    except Exception as exc:
+                        self._logbus.publish(
+                            f"position.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}"
+                        )
 
                 prefix = grid_prefix(trader.account_key, market_id, symbol)
                 existing_orders = await trader.active_orders(market_id)
@@ -391,7 +422,10 @@ class BotManager:
                             level = free_bid_levels.pop(0)
 
                         price_q = _quantize(price, meta.price_decimals, ROUND_HALF_UP)
-                        base_qty = _calc_base_qty(size_mode, size_value, price_q)
+                        size_value_effective = size_value
+                        if reduce_mode and reduce_side == side and reduce_mult > 1:
+                            size_value_effective = size_value * reduce_mult
+                        base_qty = _calc_base_qty(size_mode, size_value_effective, price_q)
                         base_qty_q = _quantize(base_qty, meta.size_decimals, ROUND_DOWN)
                         if base_qty_q <= 0:
                             continue
@@ -427,6 +461,11 @@ class BotManager:
                                 self._logbus.publish(f"order.create.error symbol={symbol} id={oid} err={type(exc).__name__}:{exc}")
 
                 msg = "模拟运行" if dry_run else "实盘运行"
+                if reduce_mode:
+                    suffix = "减仓模式"
+                    if pos_notional is not None:
+                        suffix = f"{suffix} 仓位={pos_notional:.4f}"
+                    msg = f"{msg} | {suffix}"
                 await self._update_status(
                     symbol,
                     running=True,

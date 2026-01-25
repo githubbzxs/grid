@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -50,6 +52,10 @@ class ParadexTrader:
             raise ValueError("缺少 Paradex 凭据")
 
         self._api = self._client.api_client
+        self._positions_lock = asyncio.Lock()
+        self._positions_cached_at = 0.0
+        self._positions_cache: Dict[str, Decimal] = {}
+        self._positions_ttl_s = 2.0
 
     def check_client(self) -> Optional[str]:
         try:
@@ -107,6 +113,33 @@ class ParadexTrader:
         market = str(market_id)
         data = self._api.fetch_orders({"market": market})
         return list(data.get("results") or [])
+
+    async def position_base(self, market_id: str | int) -> Decimal:
+        market = str(market_id)
+        now = time.time()
+        if (now - self._positions_cached_at) < self._positions_ttl_s:
+            return self._positions_cache.get(market, Decimal(0))
+
+        async with self._positions_lock:
+            now = time.time()
+            if (now - self._positions_cached_at) < self._positions_ttl_s:
+                return self._positions_cache.get(market, Decimal(0))
+
+            data = self._api.fetch_positions()
+            results = list(data.get("results") or [])
+            cache: Dict[str, Decimal] = {}
+            for item in results:
+                if not isinstance(item, dict):
+                    continue
+                mkt = str(item.get("market") or "")
+                if not mkt:
+                    continue
+                size = _safe_decimal(item.get("size") or 0)
+                cache[mkt] = size
+
+            self._positions_cache = cache
+            self._positions_cached_at = now
+            return cache.get(market, Decimal(0))
 
     async def create_limit_order(
         self,

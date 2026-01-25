@@ -40,10 +40,15 @@ class LighterTrader:
             api_private_keys={self.api_key_index: str(api_private_key)},
         )
         self._order_api = self._signer.order_api
+        self._account_api = lighter.AccountApi(self._signer.api_client)
 
         self._auth_token: Optional[str] = None
         self._auth_expiry_unix: int = 0
         self._market_cache: Dict[int, MarketMeta] = {}
+        self._positions_lock = asyncio.Lock()
+        self._positions_cached_at = 0.0
+        self._positions_cache: Dict[int, Decimal] = {}
+        self._positions_ttl_s = 2.0
 
     def check_client(self) -> Optional[str]:
         return self._signer.check_client()
@@ -106,6 +111,57 @@ class LighterTrader:
             auth=token,
         )
         return list(getattr(resp, "orders", []) or [])
+
+    async def position_base(self, market_id: int) -> Decimal:
+        market_id = int(market_id)
+        now = time.time()
+        if (now - self._positions_cached_at) < self._positions_ttl_s:
+            return self._positions_cache.get(market_id, Decimal(0))
+
+        async with self._positions_lock:
+            now = time.time()
+            if (now - self._positions_cached_at) < self._positions_ttl_s:
+                return self._positions_cache.get(market_id, Decimal(0))
+
+            resp = await self._account_api.account(by="index", value=str(int(self.account_index)))
+            if hasattr(resp, "model_dump"):
+                data = resp.model_dump()
+            elif hasattr(resp, "to_dict"):
+                data = resp.to_dict()
+            else:
+                data = getattr(resp, "__dict__", {})
+
+            positions = []
+            if isinstance(data, dict):
+                accounts = data.get("accounts")
+                if isinstance(accounts, list) and accounts:
+                    first = accounts[0] or {}
+                    if isinstance(first, dict):
+                        positions = first.get("positions") or []
+                elif isinstance(data.get("positions"), list):
+                    positions = data.get("positions") or []
+
+            cache: Dict[int, Decimal] = {}
+            for pos in positions or []:
+                if not isinstance(pos, dict):
+                    continue
+                mid = pos.get("market_id")
+                if not isinstance(mid, int):
+                    try:
+                        mid = int(str(mid))
+                    except Exception:
+                        continue
+                sign = pos.get("sign", 1)
+                try:
+                    sign_v = int(sign) if int(sign) != 0 else 1
+                except Exception:
+                    sign_v = 1
+                qty = Decimal(str(pos.get("position") or "0"))
+                cache[mid] = qty * Decimal(sign_v)
+
+            self._positions_cache = cache
+            self._positions_cached_at = now
+            return cache.get(market_id, Decimal(0))
 
     async def create_limit_order(
         self,

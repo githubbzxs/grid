@@ -60,6 +60,8 @@ def default_config() -> dict[str, Any]:
                 "post_only": True,
                 "max_open_orders": 50,
                 "max_position_notional": 20.0,
+                "reduce_position_notional": 0.0,
+                "reduce_order_size_multiplier": 1.0,
             },
             "ETH": {
                 "enabled": True,
@@ -72,6 +74,8 @@ def default_config() -> dict[str, Any]:
                 "post_only": True,
                 "max_open_orders": 50,
                 "max_position_notional": 20.0,
+                "reduce_position_notional": 0.0,
+                "reduce_order_size_multiplier": 1.0,
             },
             "SOL": {
                 "enabled": True,
@@ -84,6 +88,8 @@ def default_config() -> dict[str, Any]:
                 "post_only": True,
                 "max_open_orders": 50,
                 "max_position_notional": 20.0,
+                "reduce_position_notional": 0.0,
+                "reduce_order_size_multiplier": 1.0,
             },
         },
     }

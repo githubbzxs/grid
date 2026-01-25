@@ -42,6 +42,9 @@ const els = {
   stBtcDown: document.getElementById("st-btc-down"),
   stBtcMode: document.getElementById("st-btc-mode"),
   stBtcSize: document.getElementById("st-btc-size"),
+  stBtcMaxPos: document.getElementById("st-btc-maxpos"),
+  stBtcExitPos: document.getElementById("st-btc-exitpos"),
+  stBtcReduce: document.getElementById("st-btc-reduce"),
 
   stEthEnabled: document.getElementById("st-eth-enabled"),
   stEthMarket: document.getElementById("st-eth-market"),
@@ -50,6 +53,9 @@ const els = {
   stEthDown: document.getElementById("st-eth-down"),
   stEthMode: document.getElementById("st-eth-mode"),
   stEthSize: document.getElementById("st-eth-size"),
+  stEthMaxPos: document.getElementById("st-eth-maxpos"),
+  stEthExitPos: document.getElementById("st-eth-exitpos"),
+  stEthReduce: document.getElementById("st-eth-reduce"),
 
   stSolEnabled: document.getElementById("st-sol-enabled"),
   stSolMarket: document.getElementById("st-sol-market"),
@@ -58,6 +64,9 @@ const els = {
   stSolDown: document.getElementById("st-sol-down"),
   stSolMode: document.getElementById("st-sol-mode"),
   stSolSize: document.getElementById("st-sol-size"),
+  stSolMaxPos: document.getElementById("st-sol-maxpos"),
+  stSolExitPos: document.getElementById("st-sol-exitpos"),
+  stSolReduce: document.getElementById("st-sol-reduce"),
 
   runtimeDryRun: document.getElementById("runtime-dry-run"),
   runtimeInterval: document.getElementById("runtime-interval"),
@@ -246,6 +255,9 @@ function fillStrategyRow(symbol, s, key) {
   const down = s.levels_down == null ? "" : String(s.levels_down);
   const mode = s.order_size_mode || "notional";
   const size = s.order_size_value == null ? "" : String(s.order_size_value);
+  const maxpos = s.max_position_notional == null ? "" : String(s.max_position_notional);
+  const exitpos = s.reduce_position_notional == null ? "" : String(s.reduce_position_notional);
+  const reduce = s.reduce_order_size_multiplier == null ? "" : String(s.reduce_order_size_multiplier);
 
   if (key === "btc") {
     els.stBtcEnabled.checked = enabled;
@@ -255,6 +267,9 @@ function fillStrategyRow(symbol, s, key) {
     els.stBtcDown.value = down;
     els.stBtcMode.value = mode;
     els.stBtcSize.value = size;
+    els.stBtcMaxPos.value = maxpos;
+    els.stBtcExitPos.value = exitpos;
+    els.stBtcReduce.value = reduce;
   } else if (key === "eth") {
     els.stEthEnabled.checked = enabled;
     els.stEthMarket.value = market;
@@ -263,6 +278,9 @@ function fillStrategyRow(symbol, s, key) {
     els.stEthDown.value = down;
     els.stEthMode.value = mode;
     els.stEthSize.value = size;
+    els.stEthMaxPos.value = maxpos;
+    els.stEthExitPos.value = exitpos;
+    els.stEthReduce.value = reduce;
   } else if (key === "sol") {
     els.stSolEnabled.checked = enabled;
     els.stSolMarket.value = market;
@@ -271,6 +289,9 @@ function fillStrategyRow(symbol, s, key) {
     els.stSolDown.value = down;
     els.stSolMode.value = mode;
     els.stSolSize.value = size;
+    els.stSolMaxPos.value = maxpos;
+    els.stSolExitPos.value = exitpos;
+    els.stSolReduce.value = reduce;
   }
 }
 
@@ -347,6 +368,9 @@ async function saveStrategies() {
       levels_down: Math.floor(numOrZero(els.stBtcDown.value)),
       order_size_mode: els.stBtcMode.value,
       order_size_value: numOrZero(els.stBtcSize.value),
+      max_position_notional: numOrZero(els.stBtcMaxPos.value),
+      reduce_position_notional: numOrZero(els.stBtcExitPos.value),
+      reduce_order_size_multiplier: numOrZero(els.stBtcReduce.value),
       post_only: true,
     },
     ETH: {
@@ -357,6 +381,9 @@ async function saveStrategies() {
       levels_down: Math.floor(numOrZero(els.stEthDown.value)),
       order_size_mode: els.stEthMode.value,
       order_size_value: numOrZero(els.stEthSize.value),
+      max_position_notional: numOrZero(els.stEthMaxPos.value),
+      reduce_position_notional: numOrZero(els.stEthExitPos.value),
+      reduce_order_size_multiplier: numOrZero(els.stEthReduce.value),
       post_only: true,
     },
     SOL: {
@@ -367,6 +394,9 @@ async function saveStrategies() {
       levels_down: Math.floor(numOrZero(els.stSolDown.value)),
       order_size_mode: els.stSolMode.value,
       order_size_value: numOrZero(els.stSolSize.value),
+      max_position_notional: numOrZero(els.stSolMaxPos.value),
+      reduce_position_notional: numOrZero(els.stSolExitPos.value),
+      reduce_order_size_multiplier: numOrZero(els.stSolReduce.value),
       post_only: true,
     },
   };

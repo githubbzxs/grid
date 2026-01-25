@@ -29,6 +29,8 @@ class Trader(Protocol):
 
     async def active_orders(self, market_id: str | int) -> list[Any]: ...
 
+    async def position_base(self, market_id: str | int) -> Decimal: ...
+
     async def create_limit_order(
         self,
         market_id: str | int,
