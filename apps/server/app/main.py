@@ -271,16 +271,18 @@ async def bots_emergency_stop(request: Request, _: str = Depends(require_auth)) 
                 continue
 
             prefix = grid_prefix(trader.account_index, market_id, symbol)
-            ids = []
+            targets: list[tuple[int, int]] = []
             for o in orders:
                 cid = int(getattr(o, "client_order_index", 0) or 0)
                 if cid > 0 and is_grid_client_order(prefix, cid):
-                    ids.append(cid)
+                    oid = int(getattr(o, "order_index", 0) or 0)
+                    if oid > 0:
+                        targets.append((oid, cid))
 
             count = 0
-            for cid in ids[:200]:
+            for oid, cid in targets[:200]:
                 try:
-                    await trader.cancel_order(market_id, cid)
+                    await trader.cancel_order(market_id, oid)
                     count += 1
                 except Exception as exc:
                     request.app.state.logbus.publish(f"emergency.cancel.error symbol={symbol} id={cid} err={type(exc).__name__}:{exc}")

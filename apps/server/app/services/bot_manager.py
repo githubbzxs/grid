@@ -62,6 +62,17 @@ def _order_price_decimal(order: Any, meta: MarketMeta) -> Decimal:
         return Decimal(0)
 
 
+def _unique_prices(values: list[Decimal]) -> list[Decimal]:
+    seen: set[Decimal] = set()
+    result: list[Decimal] = []
+    for v in values:
+        if v in seen:
+            continue
+        seen.add(v)
+        result.append(v)
+    return result
+
+
 @dataclass
 class BotStatus:
     symbol: str
@@ -141,7 +152,7 @@ class BotManager:
         return {k: v.to_dict() for k, v in self._status.items()}
 
     async def _run(self, symbol: str, trader: LighterTrader) -> None:
-        interval_s = 2.0
+        interval_s = 0.5
         try:
             while True:
                 await asyncio.sleep(interval_s)
@@ -177,12 +188,10 @@ class BotManager:
                 prefix = grid_prefix(trader.account_index, market_id, symbol)
                 existing_orders = await trader.active_orders(market_id)
                 existing: Dict[int, Any] = {}
-                asks: list[Decimal] = []
-                bids: list[Decimal] = []
-                ask_levels: set[int] = set()
-                bid_levels: set[int] = set()
-                ask_level_prices: Dict[int, Decimal] = {}
-                bid_level_prices: Dict[int, Decimal] = {}
+                asks_by_price: Dict[Decimal, list[Any]] = {}
+                bids_by_price: Dict[Decimal, list[Any]] = {}
+                ask_used_levels: set[int] = set()
+                bid_used_levels: set[int] = set()
 
                 for o in existing_orders:
                     cid = int(getattr(o, "client_order_index", 0) or 0)
@@ -193,18 +202,17 @@ class BotManager:
                     existing[cid] = o
                     side = "ask" if bool(getattr(o, "is_ask", False)) else "bid"
                     price = _order_price_decimal(o, meta)
+                    price_q = _quantize(price, meta.price_decimals, ROUND_HALF_UP)
                     if side == "ask":
-                        asks.append(price)
+                        asks_by_price.setdefault(price_q, []).append(o)
                     else:
-                        bids.append(price)
+                        bids_by_price.setdefault(price_q, []).append(o)
                     lvl = grid_client_order_side_level(cid)
                     if lvl:
                         if lvl[0] == "ask":
-                            ask_levels.add(lvl[1])
-                            ask_level_prices.setdefault(lvl[1], price)
+                            ask_used_levels.add(lvl[1])
                         elif lvl[0] == "bid":
-                            bid_levels.add(lvl[1])
-                            bid_level_prices.setdefault(lvl[1], price)
+                            bid_used_levels.add(lvl[1])
 
                 levels_up = int(strat.get("levels_up") or 0)
                 levels_down = int(strat.get("levels_down") or 0)
@@ -216,56 +224,114 @@ class BotManager:
                 post_only = bool(strat.get("post_only", True))
                 max_open_orders = int(strat.get("max_open_orders") or 0)
 
-                ask_count = len(asks)
-                bid_count = len(bids)
+                ask_count = sum(len(v) for v in asks_by_price.values())
+                bid_count = sum(len(v) for v in bids_by_price.values())
                 total_existing = ask_count + bid_count
 
-                desired_asks = set(range(1, levels_up + 1))
-                desired_bids = set(range(1, levels_down + 1))
-                missing_ask_levels = sorted(desired_asks - ask_levels)
-                missing_bid_levels = sorted(desired_bids - bid_levels)
-                missing_asks = len(missing_ask_levels)
-                missing_bids = len(missing_bid_levels)
+                desired_asks: list[Decimal] = []
+                desired_bids: list[Decimal] = []
+                for i in range(1, levels_up + 1):
+                    p = center + (step * i)
+                    p = _quantize(p, meta.price_decimals, ROUND_HALF_UP)
+                    if p > 0:
+                        desired_asks.append(p)
+                for i in range(1, levels_down + 1):
+                    p = center - (step * i)
+                    p = _quantize(p, meta.price_decimals, ROUND_HALF_UP)
+                    if p > 0:
+                        desired_bids.append(p)
+                desired_asks = _unique_prices(desired_asks)
+                desired_bids = _unique_prices(desired_bids)
+                desired_ask_set = set(desired_asks)
+                desired_bid_set = set(desired_bids)
 
+                cancel_orders: list[tuple[Any, Decimal]] = []
+                keep_ask_prices: set[Decimal] = set()
+                for price, orders in asks_by_price.items():
+                    if price in desired_ask_set:
+                        keep_ask_prices.add(price)
+                        if len(orders) > 1:
+                            for extra in orders[1:]:
+                                cancel_orders.append((extra, price))
+                    else:
+                        for o in orders:
+                            cancel_orders.append((o, price))
+
+                keep_bid_prices: set[Decimal] = set()
+                for price, orders in bids_by_price.items():
+                    if price in desired_bid_set:
+                        keep_bid_prices.add(price)
+                        if len(orders) > 1:
+                            for extra in orders[1:]:
+                                cancel_orders.append((extra, price))
+                    else:
+                        for o in orders:
+                            cancel_orders.append((o, price))
+
+                missing_ask_prices = [p for p in desired_asks if p not in keep_ask_prices]
+                missing_bid_prices = [p for p in desired_bids if p not in keep_bid_prices]
+                missing_asks = len(missing_ask_prices)
+                missing_bids = len(missing_bid_prices)
+
+                remaining_after_cancel = max(0, total_existing - len(cancel_orders))
                 available_slots = missing_asks + missing_bids
                 if max_open_orders > 0:
-                    available_slots = max(0, max_open_orders - total_existing)
+                    available_slots = max(0, max_open_orders - remaining_after_cancel)
+
+                if cancel_orders:
+                    for o, price_q in cancel_orders:
+                        order_index = int(getattr(o, "order_index", 0) or 0)
+                        client_index = int(getattr(o, "client_order_index", 0) or 0)
+                        if order_index <= 0:
+                            self._logbus.publish(
+                                f"order.cancel.error symbol={symbol} market_id={market_id} client_id={client_index} err=missing_order_index"
+                            )
+                            continue
+                        if dry_run:
+                            self._logbus.publish(
+                                f"dry_run cancel symbol={symbol} market_id={market_id} order={order_index} client_id={client_index} price={price_q}"
+                            )
+                        else:
+                            try:
+                                await trader.cancel_order(market_id, order_index)
+                                self._logbus.publish(
+                                    f"order.cancel symbol={symbol} market_id={market_id} order={order_index} client_id={client_index}"
+                                )
+                            except Exception as exc:
+                                self._logbus.publish(
+                                    f"order.cancel.error symbol={symbol} market_id={market_id} order={order_index} err={type(exc).__name__}:{exc}"
+                                )
 
                 if available_slots > 0 and (missing_asks + missing_bids) > 0:
-                    create_plan: list[tuple[str, int]] = []
+                    create_plan: list[tuple[str, Decimal]] = []
                     a_idx = 0
                     b_idx = 0
-                    while len(create_plan) < available_slots and (a_idx < len(missing_ask_levels) or b_idx < len(missing_bid_levels)):
-                        if a_idx < len(missing_ask_levels):
-                            create_plan.append(("ask", missing_ask_levels[a_idx]))
+                    while len(create_plan) < available_slots and (a_idx < len(missing_ask_prices) or b_idx < len(missing_bid_prices)):
+                        if a_idx < len(missing_ask_prices):
+                            create_plan.append(("ask", missing_ask_prices[a_idx]))
                             a_idx += 1
                             if len(create_plan) >= available_slots:
                                 break
-                        if b_idx < len(missing_bid_levels):
-                            create_plan.append(("bid", missing_bid_levels[b_idx]))
+                        if b_idx < len(missing_bid_prices):
+                            create_plan.append(("bid", missing_bid_prices[b_idx]))
                             b_idx += 1
 
-                    ask_ref_level = min(ask_level_prices.keys(), default=0)
-                    bid_ref_level = min(bid_level_prices.keys(), default=0)
-                    ask_ref_price = ask_level_prices.get(ask_ref_level)
-                    bid_ref_price = bid_level_prices.get(bid_ref_level)
+                    free_ask_levels = [i for i in range(1, MAX_LEVEL_PER_SIDE + 1) if i not in ask_used_levels]
+                    free_bid_levels = [i for i in range(1, MAX_LEVEL_PER_SIDE + 1) if i not in bid_used_levels]
 
-                    for side, level in create_plan:
-                        if level < 1 or level > MAX_LEVEL_PER_SIDE:
-                            continue
-                        if side == "ask":
-                            if ask_ref_price is not None:
-                                price = ask_ref_price + (step * (level - ask_ref_level))
-                            else:
-                                price = center + (step * level)
-                        else:
-                            if bid_ref_price is not None:
-                                price = bid_ref_price - (step * (level - bid_ref_level))
-                            else:
-                                price = center - (step * level)
-
+                    for side, price in create_plan:
                         if price <= 0:
                             continue
+                        if side == "ask":
+                            if not free_ask_levels:
+                                self._logbus.publish(f"grid.no_free_id symbol={symbol} side=ask")
+                                continue
+                            level = free_ask_levels.pop(0)
+                        else:
+                            if not free_bid_levels:
+                                self._logbus.publish(f"grid.no_free_id symbol={symbol} side=bid")
+                                continue
+                            level = free_bid_levels.pop(0)
 
                         price_q = _quantize(price, meta.price_decimals, ROUND_HALF_UP)
                         base_qty = _calc_base_qty(size_mode, size_value, price_q)
@@ -312,7 +378,7 @@ class BotManager:
                     market_id=market_id,
                     mid=str(mid),
                     center=str(center),
-                    desired=(levels_up + levels_down),
+                    desired=(len(desired_asks) + len(desired_bids)),
                     existing=len(existing),
                 )
         except asyncio.CancelledError:
