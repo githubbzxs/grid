@@ -201,6 +201,54 @@ button.danger {
   text-align: left;
 }
 
+.stats-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+@media (min-width: 700px) {
+  .stats-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.stat-card {
+  border: 1px solid var(--border);
+  background: rgba(11, 16, 32, 0.6);
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.stat-card.primary {
+  background: rgba(91, 140, 255, 0.12);
+  border-color: rgba(91, 140, 255, 0.35);
+}
+
+.stat-label {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.stat-value {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.stat-value.accent {
+  color: var(--accent);
+}
+
+.stat-value.ok {
+  color: var(--ok);
+}
+
+.stat-value.bad {
+  color: var(--danger);
+}
+
 .muted {
   color: var(--muted);
 }
@@ -211,4 +259,3 @@ button.danger {
   font-size: 12px;
   line-height: 1.5;
 }
-

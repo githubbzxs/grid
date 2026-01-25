@@ -276,6 +276,66 @@
         </div>
 
         <div class="card">
+          <h2>策略运行状态</h2>
+          <div class="stats-grid">
+            <div class="stat-card primary">
+              <div class="stat-label">本次运行总收益（USDC）</div>
+              <div class="stat-value accent" id="rt-profit">0</div>
+            </div>
+            <div class="stat-card primary">
+              <div class="stat-label">本次运行交易量（USDC）</div>
+              <div class="stat-value accent" id="rt-volume">0</div>
+            </div>
+          </div>
+          <div class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-label">净仓位名义值</div>
+              <div class="stat-value" id="rt-position">0</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">交易笔数</div>
+              <div class="stat-value" id="rt-trades">0</div>
+            </div>
+          </div>
+          <div class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-label">挂单数量</div>
+              <div class="stat-value" id="rt-orders">0</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">减仓模式</div>
+              <div class="stat-value" id="rt-reduce">0</div>
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label>状态刷新间隔(ms)</label>
+              <input id="runtime-status-interval" type="number" min="200" step="100" placeholder="1000" />
+              <div class="hint">仅影响此状态面板的刷新频率。</div>
+            </div>
+            <div>
+              <label>最近更新时间</label>
+              <div class="hint mono" id="rt-updated">-</div>
+            </div>
+          </div>
+          <table class="table" id="runtime-table">
+            <thead>
+              <tr>
+                <th>标的</th>
+                <th>market_id</th>
+                <th>收益</th>
+                <th>交易量</th>
+                <th>交易笔数</th>
+                <th>净仓位名义值</th>
+                <th>挂单</th>
+                <th>减仓</th>
+              </tr>
+            </thead>
+            <tbody id="runtime-tbody"></tbody>
+          </table>
+        </div>
+
+        <div class="card">
           <h2>账户与挂单</h2>
           <div class="row">
             <div>

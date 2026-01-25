@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+import time
+from datetime import datetime, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -91,6 +94,34 @@ def _secret_fingerprint(value: Optional[str]) -> Optional[str]:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
 
 
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _parse_iso_ms(value: Optional[str]) -> Optional[int]:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1000)
+    except Exception:
+        return None
+
+
+def _safe_decimal(value: Any) -> Decimal:
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return Decimal(0)
+
+
+def _fmt_decimal(value: Decimal, digits: int = 4) -> str:
+    q = Decimal(1) / (Decimal(10) ** int(digits))
+    return str(value.quantize(q, rounding=ROUND_HALF_UP))
+
+
 def _order_field(order: Any, name: str) -> Any:
     if isinstance(order, dict):
         return order.get(name)
@@ -152,6 +183,146 @@ def _order_to_dict(order: Any) -> Dict[str, Any]:
     return data
 
 
+def _trade_ts_ms(value: Any) -> Optional[int]:
+    try:
+        ts = int(value)
+    except Exception:
+        return None
+    if ts < 10_000_000_000:
+        return ts * 1000
+    return ts
+
+
+async def _lighter_positions_map(trader: LighterTrader) -> Dict[int, Dict[str, Decimal]]:
+    resp = await trader._account_api.account(by="index", value=str(int(trader.account_index)))
+    if hasattr(resp, "model_dump"):
+        data = resp.model_dump()
+    elif hasattr(resp, "to_dict"):
+        data = resp.to_dict()
+    else:
+        data = getattr(resp, "__dict__", {})
+
+    positions = []
+    if isinstance(data, dict):
+        accounts = data.get("accounts")
+        if isinstance(accounts, list) and accounts:
+            first = accounts[0] or {}
+            if isinstance(first, dict):
+                positions = first.get("positions") or []
+        elif isinstance(data.get("positions"), list):
+            positions = data.get("positions") or []
+
+    result: Dict[int, Dict[str, Decimal]] = {}
+    for pos in positions or []:
+        if not isinstance(pos, dict):
+            continue
+        mid = pos.get("market_id")
+        if not isinstance(mid, int):
+            try:
+                mid = int(str(mid))
+            except Exception:
+                continue
+        sign = pos.get("sign", 1)
+        try:
+            sign_v = int(sign) if int(sign) != 0 else 1
+        except Exception:
+            sign_v = 1
+        base = _safe_decimal(pos.get("position") or 0) * Decimal(sign_v)
+        pnl = _safe_decimal(pos.get("realized_pnl") or 0) + _safe_decimal(pos.get("unrealized_pnl") or 0)
+        result[mid] = {"base": base, "pnl": pnl}
+    return result
+
+
+def _paradex_positions_map(trader: ParadexTrader) -> Dict[str, Dict[str, Decimal]]:
+    data = trader._api.fetch_positions()
+    results = list(data.get("results") or [])
+    result: Dict[str, Dict[str, Decimal]] = {}
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        market = str(item.get("market") or "")
+        if not market:
+            continue
+        base = _safe_decimal(item.get("size") or 0)
+        pnl = _safe_decimal(item.get("realized_positional_pnl") or 0) + _safe_decimal(item.get("unrealized_pnl") or 0)
+        result[market] = {"base": base, "pnl": pnl}
+    return result
+
+
+async def _lighter_trades_since(
+    trader: LighterTrader,
+    market_id: int,
+    start_ms: int,
+    max_pages: int = 5,
+) -> tuple[Decimal, int]:
+    total = Decimal(0)
+    count = 0
+    cursor = None
+    pages = 0
+    reached_old = False
+    while pages < max_pages and not reached_old:
+        resp = await trader._order_api.trades(
+            sort_by="timestamp",
+            limit=200,
+            market_id=int(market_id),
+            account_index=int(trader.account_index),
+            sort_dir="desc",
+            cursor=cursor,
+        )
+        trades = getattr(resp, "trades", None)
+        if trades is None and isinstance(resp, dict):
+            trades = resp.get("trades")
+        trades = trades or []
+        for t in trades:
+            ts = _trade_ts_ms(_order_field(t, "timestamp"))
+            if ts is not None and ts < start_ms:
+                reached_old = True
+                break
+            usd_amount = _safe_decimal(_order_field(t, "usd_amount") or 0)
+            if usd_amount == 0:
+                price = _safe_decimal(_order_field(t, "price") or 0)
+                size = _safe_decimal(_order_field(t, "size") or 0)
+                usd_amount = price * size
+            total += abs(usd_amount)
+            count += 1
+        cursor = getattr(resp, "next_cursor", None) if not isinstance(resp, dict) else resp.get("next_cursor")
+        if not cursor:
+            break
+        pages += 1
+    return total, count
+
+
+def _paradex_fills_since(
+    trader: ParadexTrader,
+    market: str,
+    start_ms: int,
+    end_ms: int,
+    max_pages: int = 5,
+) -> tuple[Decimal, int]:
+    total = Decimal(0)
+    count = 0
+    cursor = None
+    pages = 0
+    while pages < max_pages:
+        params = {"market": market, "start_at": int(start_ms), "end_at": int(end_ms), "page_size": 200}
+        if cursor:
+            params["cursor"] = cursor
+        data = trader._api.fetch_fills(params)
+        results = list(data.get("results") or [])
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            price = _safe_decimal(item.get("price") or 0)
+            size = _safe_decimal(item.get("size") or 0)
+            total += abs(price * size)
+            count += 1
+        cursor = data.get("next") or data.get("next_cursor")
+        if not cursor:
+            break
+        pages += 1
+    return total, count
+
+
 def _mask_config(config: Dict[str, Any]) -> Dict[str, Any]:
     exchange = dict(config.get("exchange", {}))
     exchange.pop("api_private_key_enc", None)
@@ -185,6 +356,7 @@ async def _startup() -> None:
     app.state.lighter_trader_sig = None
     app.state.paradex_trader = None
     app.state.paradex_trader_sig = None
+    app.state.runtime_stats = {}
     app.state.logbus.publish("server.start")
 
 
@@ -357,22 +529,32 @@ async def bots_status(request: Request, _: str = Depends(require_auth)) -> Dict[
 
 @app.post("/api/bots/start")
 async def bots_start(body: BotSymbolsBody, request: Request, _: str = Depends(require_unlocked)) -> Dict[str, Any]:
-    trader = await _ensure_trader(request)
+    config: Dict[str, Any] = request.app.state.config.read()
+    exchange_name = _exchange_name(config)
+    trader = await _ensure_trader(request, exchange_name)
+    runtime_stats: Dict[str, Any] = request.app.state.runtime_stats
+    now_ms = _now_ms()
     for symbol in body.symbols:
-        await request.app.state.bot_manager.start(symbol.upper(), trader)
+        sym = symbol.upper()
+        runtime_stats[sym] = {"exchange": exchange_name, "start_ms": now_ms, "base_pnl": None}
+        await request.app.state.bot_manager.start(sym, trader)
     return {"ok": True, "bots": request.app.state.bot_manager.snapshot()}
 
 
 @app.post("/api/bots/stop")
 async def bots_stop(body: BotSymbolsBody, request: Request, _: str = Depends(require_auth)) -> Dict[str, Any]:
+    runtime_stats: Dict[str, Any] = request.app.state.runtime_stats
     for symbol in body.symbols:
-        await request.app.state.bot_manager.stop(symbol.upper())
+        sym = symbol.upper()
+        await request.app.state.bot_manager.stop(sym)
+        runtime_stats.pop(sym, None)
     return {"ok": True, "bots": request.app.state.bot_manager.snapshot()}
 
 
 @app.post("/api/bots/emergency_stop")
 async def bots_emergency_stop(request: Request, _: str = Depends(require_auth)) -> Dict[str, Any]:
     await request.app.state.bot_manager.stop_all()
+    request.app.state.runtime_stats = {}
     canceled: Dict[str, int] = {}
     config: Dict[str, Any] = request.app.state.config.read()
     exchange_name = _exchange_name(config)
@@ -439,6 +621,161 @@ async def logs_recent(request: Request, _: str = Depends(require_auth)) -> Dict[
 @app.get("/api/logs/stream")
 async def logs_stream(request: Request, _: str = Depends(require_auth)) -> StreamingResponse:
     return StreamingResponse(request.app.state.logbus.stream(), media_type="text/event-stream")
+
+
+@app.get("/api/runtime/status")
+async def runtime_status(
+    request: Request,
+    exchange: Optional[str] = None,
+    _: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    config: Dict[str, Any] = request.app.state.config.read()
+    name = _exchange_name(config, exchange)
+    bots = request.app.state.bot_manager.snapshot()
+    runtime_stats: Dict[str, Any] = request.app.state.runtime_stats
+    now_ms = _now_ms()
+    updated_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+    running_symbols: list[str] = []
+    for symbol, data in bots.items():
+        if isinstance(data, dict) and data.get("running"):
+            running_symbols.append(symbol)
+
+    if not running_symbols:
+        return {
+            "exchange": name,
+            "updated_at": updated_at,
+            "totals": {
+                "profit": "0",
+                "volume": "0",
+                "trade_count": 0,
+                "position_notional": "0",
+                "open_orders": 0,
+                "reduce_symbols": [],
+                "running": 0,
+            },
+            "symbols": {},
+        }
+
+    try:
+        trader = await _ensure_trader(request, name)
+    except Exception as exc:
+        request.app.state.logbus.publish(f"runtime.status.error err={type(exc).__name__}:{exc}")
+        return {"exchange": name, "updated_at": updated_at, "error": "无法建立交易所连接"}
+
+    positions_map: Dict[Any, Dict[str, Decimal]]
+    if name == "paradex" and isinstance(trader, ParadexTrader):
+        positions_map = _paradex_positions_map(trader)
+    elif isinstance(trader, LighterTrader):
+        positions_map = await _lighter_positions_map(trader)
+    else:
+        positions_map = {}
+
+    totals_profit = Decimal(0)
+    totals_volume = Decimal(0)
+    totals_trades = 0
+    totals_position = Decimal(0)
+    totals_orders = 0
+    reduce_symbols: list[str] = []
+    symbols_data: Dict[str, Any] = {}
+
+    for symbol in sorted(running_symbols):
+        status = bots.get(symbol) or {}
+        if not isinstance(status, dict):
+            continue
+        started_at = status.get("started_at")
+        start_ms = _parse_iso_ms(started_at) or now_ms
+        entry = runtime_stats.get(symbol)
+        if not isinstance(entry, dict) or entry.get("exchange") != name:
+            entry = {"exchange": name, "start_ms": start_ms, "base_pnl": None}
+            runtime_stats[symbol] = entry
+        if entry.get("start_ms") is None:
+            entry["start_ms"] = start_ms
+        start_ms = int(entry.get("start_ms") or start_ms)
+
+        strat = (config.get("strategies", {}) or {}).get(symbol, {}) or {}
+        market_id = strat.get("market_id")
+        if market_id is None or (isinstance(market_id, str) and not market_id.strip()):
+            market_id = status.get("market_id")
+        if name == "paradex" and market_id is not None:
+            market_id = str(market_id)
+        if name == "lighter" and isinstance(market_id, str):
+            try:
+                market_id = int(market_id)
+            except Exception:
+                pass
+
+        pnl_now = Decimal(0)
+        pos_base = Decimal(0)
+        if market_id is not None:
+            pnl_item = positions_map.get(market_id)
+            if pnl_item:
+                pnl_now = _safe_decimal(pnl_item.get("pnl"))
+                pos_base = _safe_decimal(pnl_item.get("base"))
+
+        if entry.get("base_pnl") is None:
+            entry["base_pnl"] = pnl_now
+        profit = pnl_now - _safe_decimal(entry.get("base_pnl") or 0)
+
+        volume = Decimal(0)
+        trade_count = 0
+        try:
+            if name == "paradex" and isinstance(trader, ParadexTrader) and market_id is not None:
+                volume, trade_count = _paradex_fills_since(trader, str(market_id), start_ms, now_ms)
+            elif isinstance(trader, LighterTrader) and isinstance(market_id, int):
+                volume, trade_count = await _lighter_trades_since(trader, int(market_id), start_ms)
+        except Exception as exc:
+            request.app.state.logbus.publish(
+                f"runtime.trades.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}"
+            )
+
+        mid_value = _safe_decimal(status.get("mid") or 0)
+        if mid_value <= 0 and market_id is not None:
+            try:
+                bid, ask = await trader.best_bid_ask(market_id)
+                if bid is not None and ask is not None:
+                    mid_value = (bid + ask) / 2
+            except Exception:
+                mid_value = Decimal(0)
+
+        position_notional = abs(pos_base * mid_value) if mid_value > 0 else Decimal(0)
+        open_orders = int(status.get("existing") or 0)
+        reduce_mode = bool(status.get("reduce_mode"))
+        if reduce_mode:
+            reduce_symbols.append(symbol)
+
+        symbols_data[symbol] = {
+            "symbol": symbol,
+            "market_id": market_id,
+            "started_at": started_at,
+            "profit": _fmt_decimal(profit),
+            "volume": _fmt_decimal(volume),
+            "trade_count": trade_count,
+            "position_notional": _fmt_decimal(position_notional),
+            "open_orders": open_orders,
+            "reduce_mode": reduce_mode,
+        }
+
+        totals_profit += profit
+        totals_volume += volume
+        totals_trades += trade_count
+        totals_position += position_notional
+        totals_orders += open_orders
+
+    return {
+        "exchange": name,
+        "updated_at": updated_at,
+        "totals": {
+            "profit": _fmt_decimal(totals_profit),
+            "volume": _fmt_decimal(totals_volume),
+            "trade_count": totals_trades,
+            "position_notional": _fmt_decimal(totals_position),
+            "open_orders": totals_orders,
+            "reduce_symbols": reduce_symbols,
+            "running": len(symbols_data),
+        },
+        "symbols": symbols_data,
+    }
 
 
 @app.get("/api/exchange/markets")

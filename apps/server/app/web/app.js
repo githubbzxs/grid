@@ -70,6 +70,7 @@ const els = {
 
   runtimeDryRun: document.getElementById("runtime-dry-run"),
   runtimeInterval: document.getElementById("runtime-interval"),
+  runtimeStatusInterval: document.getElementById("runtime-status-interval"),
   btnSaveStrategies: document.getElementById("btn-save-strategies"),
   btnAutoMarket: document.getElementById("btn-auto-market"),
 
@@ -85,12 +86,22 @@ const els = {
   btnRefreshOrders: document.getElementById("btn-refresh-orders"),
   ordersOutput: document.getElementById("orders-output"),
 
+  rtProfit: document.getElementById("rt-profit"),
+  rtVolume: document.getElementById("rt-volume"),
+  rtPosition: document.getElementById("rt-position"),
+  rtTrades: document.getElementById("rt-trades"),
+  rtOrders: document.getElementById("rt-orders"),
+  rtReduce: document.getElementById("rt-reduce"),
+  rtUpdated: document.getElementById("rt-updated"),
+  runtimeTbody: document.getElementById("runtime-tbody"),
+
   logs: document.getElementById("logs"),
 };
 
 let authState = { setup_required: true, authenticated: false, unlocked: false };
 let logSource = null;
 let lastMarkets = [];
+let runtimeTimer = null;
 
 function currentExchange() {
   const name = (els.exName && els.exName.value) || "lighter";
@@ -165,16 +176,28 @@ async function refreshAuth() {
     if (authState.setup_required) {
       setPill(false, "需要初始化");
       showApp(false);
+      if (runtimeTimer) {
+        clearInterval(runtimeTimer);
+        runtimeTimer = null;
+      }
       return;
     }
     if (!authState.authenticated) {
       setPill(false, "未登录");
       showApp(false);
+      if (runtimeTimer) {
+        clearInterval(runtimeTimer);
+        runtimeTimer = null;
+      }
       return;
     }
     if (!authState.unlocked) {
       setPill(false, "已登录但未解锁");
       showApp(false);
+      if (runtimeTimer) {
+        clearInterval(runtimeTimer);
+        runtimeTimer = null;
+      }
       return;
     }
     setPill(true, "已解锁");
@@ -182,6 +205,8 @@ async function refreshAuth() {
     startLogStream();
     await loadConfig();
     await refreshBots();
+    await refreshRuntimeStatus();
+    startRuntimeLoop();
   } catch (e) {
     setPill(false, `错误：${e.message}`);
     showApp(false);
@@ -208,6 +233,10 @@ async function logout() {
     logSource.close();
     logSource = null;
   }
+  if (runtimeTimer) {
+    clearInterval(runtimeTimer);
+    runtimeTimer = null;
+  }
   await refreshAuth();
 }
 
@@ -216,6 +245,10 @@ async function lock() {
   if (logSource) {
     logSource.close();
     logSource = null;
+  }
+  if (runtimeTimer) {
+    clearInterval(runtimeTimer);
+    runtimeTimer = null;
   }
   await refreshAuth();
 }
@@ -238,6 +271,9 @@ function fillConfig(cfg) {
   const rt = cfg.runtime || {};
   els.runtimeDryRun.value = String(Boolean(rt.dry_run));
   els.runtimeInterval.value = rt.loop_interval_ms == null ? "100" : String(rt.loop_interval_ms);
+  if (els.runtimeStatusInterval) {
+    els.runtimeStatusInterval.value = rt.status_refresh_ms == null ? "1000" : String(rt.status_refresh_ms);
+  }
 
   const st = cfg.strategies || {};
   fillStrategyRow("BTC", st.BTC || {}, "btc");
@@ -355,6 +391,7 @@ async function saveStrategies() {
   const runtime = {
     dry_run: els.runtimeDryRun.value === "true",
     loop_interval_ms: Math.floor(numOrZero(els.runtimeInterval.value)),
+    status_refresh_ms: Math.floor(numOrZero(els.runtimeStatusInterval ? els.runtimeStatusInterval.value : 0)) || 1000,
   };
   const btcMarket = marketIdValue(els.stBtcMarket);
   const ethMarket = marketIdValue(els.stEthMarket);
@@ -403,6 +440,7 @@ async function saveStrategies() {
 
   const resp = await apiFetch("/api/config", { method: "POST", body: { runtime, strategies } });
   fillConfig(resp.config || {});
+  startRuntimeLoop();
 }
 
 async function resolveAccountIndex() {
@@ -468,6 +506,73 @@ async function refreshOrders() {
     `/api/exchange/active_orders?symbol=${encodeURIComponent(symbol)}&mine=${encodeURIComponent(mine)}&exchange=${encodeURIComponent(exchange)}`
   );
   els.ordersOutput.value = JSON.stringify(resp || {}, null, 2);
+}
+
+function fmtNumber(value, digits = 4) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "-";
+  return n.toFixed(digits);
+}
+
+function setProfitStyle(el, value) {
+  if (!el) return;
+  el.classList.remove("ok", "bad");
+  const n = Number(value);
+  if (!Number.isFinite(n)) return;
+  if (n > 0) el.classList.add("ok");
+  if (n < 0) el.classList.add("bad");
+}
+
+function renderRuntimeStatus(data) {
+  const totals = data.totals || {};
+  els.rtProfit.textContent = fmtNumber(totals.profit, 4);
+  setProfitStyle(els.rtProfit, totals.profit);
+  els.rtVolume.textContent = fmtNumber(totals.volume, 4);
+  els.rtPosition.textContent = fmtNumber(totals.position_notional, 4);
+  els.rtTrades.textContent = String(totals.trade_count || 0);
+  els.rtOrders.textContent = String(totals.open_orders || 0);
+  const reduceSymbols = totals.reduce_symbols || [];
+  els.rtReduce.textContent = reduceSymbols.length ? reduceSymbols.join(", ") : "无";
+  els.rtUpdated.textContent = data.updated_at || "-";
+
+  const symbols = data.symbols || {};
+  const rows = ["BTC", "ETH", "SOL"].map((s) => symbols[s] || { symbol: s });
+  els.runtimeTbody.innerHTML = rows
+    .map((r) => {
+      const reduce = r.reduce_mode ? "是" : "否";
+      return `<tr>
+        <td class="mono">${escapeHtml(r.symbol || "")}</td>
+        <td class="mono muted">${escapeHtml(r.market_id || "")}</td>
+        <td class="mono">${escapeHtml(fmtNumber(r.profit, 4))}</td>
+        <td class="mono">${escapeHtml(fmtNumber(r.volume, 4))}</td>
+        <td class="mono">${escapeHtml(String(r.trade_count || 0))}</td>
+        <td class="mono">${escapeHtml(fmtNumber(r.position_notional, 4))}</td>
+        <td class="mono">${escapeHtml(String(r.open_orders || 0))}</td>
+        <td class="mono">${escapeHtml(reduce)}</td>
+      </tr>`;
+    })
+    .join("");
+}
+
+async function refreshRuntimeStatus() {
+  const exchange = currentExchange();
+  const resp = await apiFetch(`/api/runtime/status?exchange=${encodeURIComponent(exchange)}`);
+  renderRuntimeStatus(resp || {});
+}
+
+function startRuntimeLoop() {
+  if (runtimeTimer) {
+    clearInterval(runtimeTimer);
+    runtimeTimer = null;
+  }
+  const interval = Math.max(200, Math.floor(numOrZero(els.runtimeStatusInterval ? els.runtimeStatusInterval.value : 1000)));
+  runtimeTimer = setInterval(async () => {
+    if (authState.authenticated && authState.unlocked) {
+      try {
+        await refreshRuntimeStatus();
+      } catch {}
+    }
+  }, interval);
 }
 
 function renderBots(bots) {

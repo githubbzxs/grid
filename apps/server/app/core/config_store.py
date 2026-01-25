@@ -29,6 +29,7 @@ def default_config() -> dict[str, Any]:
         "runtime": {
             "dry_run": True,
             "loop_interval_ms": 100,
+            "status_refresh_ms": 1000,
         },
         "server": {
             "host": "0.0.0.0",

@@ -128,6 +128,7 @@ class BotStatus:
     center: Optional[str] = None
     desired: int = 0
     existing: int = 0
+    reduce_mode: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -141,6 +142,7 @@ class BotStatus:
             "center": self.center,
             "desired": self.desired,
             "existing": self.existing,
+            "reduce_mode": self.reduce_mode,
         }
 
 
@@ -476,6 +478,7 @@ class BotManager:
                     center=str(center),
                     desired=(len(desired_asks) + len(desired_bids)),
                     existing=len(existing),
+                    reduce_mode=reduce_mode,
                 )
         except asyncio.CancelledError:
             raise
