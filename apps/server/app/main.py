@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import secrets
-import zlib
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -19,6 +18,7 @@ from app.exchanges.lighter.public_api import LighterPublicClient, base_url as li
 from app.exchanges.lighter.sdk_ops import fetch_perp_markets, test_connection as lighter_test_connection
 from app.exchanges.lighter.trader import LighterTrader
 from app.services.bot_manager import BotManager
+from app.strategies.grid.ids import grid_prefix, is_grid_client_order
 
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
@@ -270,11 +270,11 @@ async def bots_emergency_stop(request: Request, _: str = Depends(require_auth)) 
                 request.app.state.logbus.publish(f"emergency.list.error symbol={symbol} err={type(exc).__name__}:{exc}")
                 continue
 
-            prefix = zlib.crc32(f"{trader.account_index}:{market_id}:{symbol}".encode("utf-8")) & 0x7FFFFFFF
+            prefix = grid_prefix(trader.account_index, market_id, symbol)
             ids = []
             for o in orders:
                 cid = int(getattr(o, "client_order_index", 0) or 0)
-                if cid > 0 and (cid // 1_000_000) == prefix:
+                if cid > 0 and is_grid_client_order(prefix, cid):
                     ids.append(cid)
 
             count = 0
@@ -361,12 +361,12 @@ async def lighter_active_orders(
 
     trader = await _ensure_lighter_trader(request)
     orders = await trader.active_orders(market_id)
-    prefix = zlib.crc32(f"{trader.account_index}:{market_id}:{symbol}".encode("utf-8")) & 0x7FFFFFFF
+    prefix = grid_prefix(trader.account_index, market_id, symbol)
 
     items = []
     for o in orders:
         cid = int(getattr(o, "client_order_index", 0) or 0)
-        if mine and (cid // 1_000_000) != prefix:
+        if mine and not is_grid_client_order(prefix, cid):
             continue
         items.append(
             {

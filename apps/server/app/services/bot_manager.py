@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import zlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
@@ -10,22 +9,16 @@ from typing import Any, Dict, Optional
 from app.core.config_store import ConfigStore
 from app.core.logbus import LogBus
 from app.exchanges.lighter.trader import LighterTrader, MarketMeta
+from app.strategies.grid.ids import (
+    CLIENT_ORDER_MAX,
+    grid_client_order_id,
+    grid_prefix,
+    is_grid_client_order,
+)
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-
-
-def _crc32(text: str) -> int:
-    return zlib.crc32(text.encode("utf-8")) & 0x7FFFFFFF
-
-
-def _bot_prefix(account_index: int, market_id: int, symbol: str) -> int:
-    return _crc32(f"{account_index}:{market_id}:{symbol}")
-
-
-def _bot_base_id(prefix: int) -> int:
-    return int(prefix) * 1_000_000
 
 
 def _quantize(value: Decimal, decimals: int, rounding) -> Decimal:
@@ -71,7 +64,6 @@ def _desired_orders(
     size_value = _safe_decimal(strat.get("order_size_value") or 0)
     post_only = bool(strat.get("post_only", True))
 
-    bot_base = _bot_base_id(bot_prefix)
     result: Dict[int, Dict[str, Any]] = {}
 
     for i in range(1, levels_up + 1):
@@ -87,7 +79,9 @@ def _desired_orders(
             continue
         if (base_qty_q * price_q) < meta.min_quote_amount:
             continue
-        oid = bot_base + 1000 + i
+        oid = grid_client_order_id(bot_prefix, "ask", i)
+        if oid > CLIENT_ORDER_MAX:
+            continue
         result[oid] = {
             "symbol": symbol,
             "market_id": market_id,
@@ -111,7 +105,9 @@ def _desired_orders(
             continue
         if (base_qty_q * price_q) < meta.min_quote_amount:
             continue
-        oid = bot_base + 2000 + i
+        oid = grid_client_order_id(bot_prefix, "bid", i)
+        if oid > CLIENT_ORDER_MAX:
+            continue
         result[oid] = {
             "symbol": symbol,
             "market_id": market_id,
@@ -237,7 +233,7 @@ class BotManager:
                 center = (mid / step).to_integral_value(rounding=ROUND_HALF_UP) * step
                 center = _quantize(center, meta.price_decimals, ROUND_HALF_UP)
 
-                prefix = _bot_prefix(trader.account_index, market_id, symbol)
+                prefix = grid_prefix(trader.account_index, market_id, symbol)
                 desired = _desired_orders(symbol, market_id, center, step, strat, meta, prefix)
                 max_open_orders = int(strat.get("max_open_orders") or 0)
                 if max_open_orders > 0 and len(desired) > max_open_orders:
@@ -250,7 +246,7 @@ class BotManager:
                     cid = int(getattr(o, "client_order_index", 0) or 0)
                     if cid <= 0:
                         continue
-                    if (cid // 1_000_000) != prefix:
+                    if not is_grid_client_order(prefix, cid):
                         continue
                     existing[cid] = o
 
