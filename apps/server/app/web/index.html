@@ -218,6 +218,41 @@
         </div>
 
         <div class="card">
+          <h2>账户与挂单</h2>
+          <div class="row">
+            <div>
+              <div class="btns">
+                <button id="btn-refresh-account">刷新账户</button>
+              </div>
+              <textarea id="account-output" class="mono" readonly placeholder="点击“刷新账户”后显示"></textarea>
+            </div>
+            <div>
+              <div class="row">
+                <div>
+                  <label>标的</label>
+                  <select id="orders-symbol">
+                    <option value="BTC">BTC</option>
+                    <option value="ETH">ETH</option>
+                    <option value="SOL">SOL</option>
+                  </select>
+                </div>
+                <div>
+                  <label>只看网格订单</label>
+                  <select id="orders-mine">
+                    <option value="true">是</option>
+                    <option value="false">否</option>
+                  </select>
+                </div>
+              </div>
+              <div class="btns">
+                <button id="btn-refresh-orders">刷新挂单</button>
+              </div>
+              <textarea id="orders-output" class="mono" readonly placeholder="点击“刷新挂单”后显示"></textarea>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
           <h2>日志</h2>
           <div class="logs mono" id="logs"></div>
         </div>

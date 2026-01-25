@@ -58,6 +58,13 @@ const els = {
   btnEmergency: document.getElementById("btn-emergency"),
   botsTbody: document.getElementById("bots-tbody"),
 
+  btnRefreshAccount: document.getElementById("btn-refresh-account"),
+  accountOutput: document.getElementById("account-output"),
+  ordersSymbol: document.getElementById("orders-symbol"),
+  ordersMine: document.getElementById("orders-mine"),
+  btnRefreshOrders: document.getElementById("btn-refresh-orders"),
+  ordersOutput: document.getElementById("orders-output"),
+
   logs: document.getElementById("logs"),
 };
 
@@ -338,6 +345,18 @@ async function testConnection() {
   els.testOutput.value = JSON.stringify(resp.result || {}, null, 2);
 }
 
+async function refreshAccount() {
+  const resp = await apiFetch("/api/lighter/account_snapshot");
+  els.accountOutput.value = JSON.stringify(resp.account || {}, null, 2);
+}
+
+async function refreshOrders() {
+  const symbol = els.ordersSymbol.value;
+  const mine = els.ordersMine.value;
+  const resp = await apiFetch(`/api/lighter/active_orders?symbol=${encodeURIComponent(symbol)}&mine=${encodeURIComponent(mine)}`);
+  els.ordersOutput.value = JSON.stringify(resp || {}, null, 2);
+}
+
 function renderBots(bots) {
   const symbols = ["BTC", "ETH", "SOL"];
   const rows = symbols.map((s) => bots[s] || { symbol: s, running: false, started_at: null, last_tick_at: null, message: "" });
@@ -465,6 +484,20 @@ function wire() {
     if (!confirm("确定执行紧急停止吗？")) return;
     try {
       await emergencyStop();
+    } catch (e) {
+      alert(e.message);
+    }
+  });
+  els.btnRefreshAccount.addEventListener("click", async () => {
+    try {
+      await refreshAccount();
+    } catch (e) {
+      alert(e.message);
+    }
+  });
+  els.btnRefreshOrders.addEventListener("click", async () => {
+    try {
+      await refreshOrders();
     } catch (e) {
       alert(e.message);
     }

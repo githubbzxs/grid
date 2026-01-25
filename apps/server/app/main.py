@@ -15,7 +15,7 @@ from starlette.responses import StreamingResponse
 from app.core.config_store import ConfigStore, default_data_dir
 from app.core.logbus import LogBus
 from app.core.security import decrypt_str, derive_fernet, encrypt_str, new_salt_b64, password_hash_b64, verify_password
-from app.exchanges.lighter.public_api import LighterPublicClient
+from app.exchanges.lighter.public_api import LighterPublicClient, base_url as lighter_base_url
 from app.exchanges.lighter.sdk_ops import fetch_perp_markets, test_connection as lighter_test_connection
 from app.exchanges.lighter.trader import LighterTrader
 from app.services.bot_manager import BotManager
@@ -343,6 +343,73 @@ async def lighter_test(request: Request, _: str = Depends(require_unlocked)) -> 
         request.app.state.logbus.publish(f"lighter.test_connection error={type(exc).__name__}:{exc}")
         raise HTTPException(status_code=502, detail="测试失败")
     return {"result": result}
+
+
+@app.get("/api/lighter/active_orders")
+async def lighter_active_orders(
+    request: Request,
+    symbol: str = "BTC",
+    mine: bool = True,
+    _: str = Depends(require_unlocked),
+) -> Dict[str, Any]:
+    symbol = symbol.upper()
+    config: Dict[str, Any] = request.app.state.config.read()
+    strat = (config.get("strategies", {}) or {}).get(symbol, {}) or {}
+    market_id = strat.get("market_id")
+    if not isinstance(market_id, int):
+        raise HTTPException(status_code=400, detail="未配置 market_id")
+
+    trader = await _ensure_lighter_trader(request)
+    orders = await trader.active_orders(market_id)
+    prefix = zlib.crc32(f"{trader.account_index}:{market_id}:{symbol}".encode("utf-8")) & 0x7FFFFFFF
+
+    items = []
+    for o in orders:
+        cid = int(getattr(o, "client_order_index", 0) or 0)
+        if mine and (cid // 1_000_000) != prefix:
+            continue
+        items.append(
+            {
+                "client_order_index": cid,
+                "order_index": int(getattr(o, "order_index", 0) or 0),
+                "is_ask": bool(getattr(o, "is_ask", False)),
+                "price": getattr(o, "price", None),
+                "base_price": int(getattr(o, "base_price", 0) or 0),
+                "base_size": int(getattr(o, "base_size", 0) or 0),
+                "remaining_base_amount": getattr(o, "remaining_base_amount", None),
+                "status": getattr(o, "status", None),
+                "created_at": getattr(o, "created_at", None),
+                "updated_at": getattr(o, "updated_at", None),
+            }
+        )
+    return {"symbol": symbol, "market_id": market_id, "orders": items}
+
+
+@app.get("/api/lighter/account_snapshot")
+async def lighter_account_snapshot(request: Request, _: str = Depends(require_auth)) -> Dict[str, Any]:
+    config: Dict[str, Any] = request.app.state.config.read()
+    ex = config.get("exchange", {})
+    env = str(ex.get("env") or "mainnet")
+    account_index = ex.get("account_index")
+    if not isinstance(account_index, int):
+        raise HTTPException(status_code=400, detail="未配置 account_index")
+
+    import lighter
+
+    url = lighter_base_url(env)
+    api_client = lighter.ApiClient(configuration=lighter.Configuration(host=url))
+    try:
+        account_api = lighter.AccountApi(api_client)
+        resp = await account_api.account(by="index", value=str(int(account_index)))
+        if hasattr(resp, "model_dump"):
+            data = resp.model_dump()
+        elif hasattr(resp, "to_dict"):
+            data = resp.to_dict()
+        else:
+            data = {"raw": str(resp)}
+        return {"account": data}
+    finally:
+        await api_client.close()
 
 
 def _get_secret(request: Request, name: str) -> Optional[str]:
