@@ -21,6 +21,10 @@ const els = {
   exApiKeyHint: document.getElementById("ex-api-key-hint"),
   exEthKeyHint: document.getElementById("ex-eth-key-hint"),
   btnSaveConfig: document.getElementById("btn-save-config"),
+  btnFetchMarkets: document.getElementById("btn-fetch-markets"),
+  btnTestConn: document.getElementById("btn-test-conn"),
+  marketsOutput: document.getElementById("markets-output"),
+  testOutput: document.getElementById("test-output"),
 
   btnStartAll: document.getElementById("btn-start-all"),
   btnStopAll: document.getElementById("btn-stop-all"),
@@ -193,6 +197,22 @@ async function resolveAccountIndex() {
   els.exAccount.value = String(resp.account_index);
 }
 
+async function fetchMarkets() {
+  const env = els.exEnv.value;
+  const resp = await apiFetch(`/api/lighter/markets?env=${encodeURIComponent(env)}`);
+  const items = resp.items || [];
+  const lines = items.map(
+    (x) =>
+      `${x.symbol} id=${x.market_id} sizeDec=${x.supported_size_decimals} priceDec=${x.supported_price_decimals} makerFee=${x.maker_fee} takerFee=${x.taker_fee}`
+  );
+  els.marketsOutput.value = lines.join("\n");
+}
+
+async function testConnection() {
+  const resp = await apiFetch("/api/lighter/test_connection", { method: "POST" });
+  els.testOutput.value = JSON.stringify(resp.result || {}, null, 2);
+}
+
 function renderBots(bots) {
   const symbols = ["BTC", "ETH", "SOL"];
   const rows = symbols.map((s) => bots[s] || { symbol: s, running: false, started_at: null, last_tick_at: null, message: "" });
@@ -273,6 +293,20 @@ function wire() {
   els.btnResolveAccount.addEventListener("click", async () => {
     try {
       await resolveAccountIndex();
+    } catch (e) {
+      alert(e.message);
+    }
+  });
+  els.btnFetchMarkets.addEventListener("click", async () => {
+    try {
+      await fetchMarkets();
+    } catch (e) {
+      alert(e.message);
+    }
+  });
+  els.btnTestConn.addEventListener("click", async () => {
+    try {
+      await testConnection();
     } catch (e) {
       alert(e.message);
     }

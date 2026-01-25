@@ -15,6 +15,7 @@ from app.core.config_store import ConfigStore, default_data_dir
 from app.core.logbus import LogBus
 from app.core.security import decrypt_str, derive_fernet, encrypt_str, new_salt_b64, password_hash_b64, verify_password
 from app.exchanges.lighter.public_api import LighterPublicClient
+from app.exchanges.lighter.sdk_ops import fetch_perp_markets, test_connection as lighter_test_connection
 from app.services.bot_manager import BotManager
 
 
@@ -269,6 +270,34 @@ async def lighter_resolve_account_index(
     if idx is None:
         raise HTTPException(status_code=404, detail="未找到 account_index")
     return {"account_index": idx}
+
+
+@app.get("/api/lighter/markets")
+async def lighter_markets(request: Request, env: str = "mainnet", _: str = Depends(require_auth)) -> Dict[str, Any]:
+    try:
+        items = await fetch_perp_markets(env)
+    except Exception as exc:
+        request.app.state.logbus.publish(f"lighter.markets error={type(exc).__name__}:{exc}")
+        raise HTTPException(status_code=502, detail="查询市场失败")
+    return {"items": items}
+
+
+@app.post("/api/lighter/test_connection")
+async def lighter_test(request: Request, _: str = Depends(require_unlocked)) -> Dict[str, Any]:
+    config: Dict[str, Any] = request.app.state.config.read()
+    ex = config.get("exchange", {})
+    env = str(ex.get("env") or "mainnet")
+    account_index = ex.get("account_index")
+    api_key_index = ex.get("api_key_index")
+    api_private_key = _get_secret(request, "api_private_key")
+    if not isinstance(account_index, int) or not isinstance(api_key_index, int) or not api_private_key:
+        raise HTTPException(status_code=400, detail="请先完整配置 account_index、api_key_index、API 私钥")
+    try:
+        result = await lighter_test_connection(env, int(account_index), int(api_key_index), api_private_key)
+    except Exception as exc:
+        request.app.state.logbus.publish(f"lighter.test_connection error={type(exc).__name__}:{exc}")
+        raise HTTPException(status_code=502, detail="测试失败")
+    return {"result": result}
 
 
 def _get_secret(request: Request, name: str) -> Optional[str]:
