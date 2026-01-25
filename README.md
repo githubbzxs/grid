@@ -22,20 +22,20 @@ Grid（无限网格交易程序）
 Windows
 
 - 双击 `scripts/start.bat`
-- 浏览器打开 `http://127.0.0.1:8000/`
+- 浏览器打开 `http://127.0.0.1:9999/`
 
 Linux
 
 - 执行 `bash scripts/start.sh`
-- 浏览器打开 `http://127.0.0.1:8000/`
+- 浏览器打开 `http://127.0.0.1:9999/`
 
 公网部署（可选）
 ------------
 
 脚本支持环境变量：
 
-- Windows：先设置 `GRID_HOST=0.0.0.0`、`GRID_PORT=8000` 再运行脚本
-- Linux：`GRID_HOST=0.0.0.0 GRID_PORT=8000 bash scripts/start.sh`
+- Windows：先设置 `GRID_HOST=0.0.0.0`、`GRID_PORT=9999` 再运行脚本
+- Linux：`GRID_HOST=0.0.0.0 GRID_PORT=9999 bash scripts/start.sh`
 
 提示：公网必须设置强管理员密码，建议配合反向代理与 HTTPS。
 

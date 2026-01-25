@@ -30,8 +30,8 @@ def default_config() -> dict[str, Any]:
             "dry_run": True,
         },
         "server": {
-            "host": "127.0.0.1",
-            "port": 8000,
+            "host": "0.0.0.0",
+            "port": 9999,
         },
         "exchange": {
             "env": "mainnet",

@@ -11,7 +11,9 @@ from app.core.logbus import LogBus
 from app.exchanges.lighter.trader import LighterTrader, MarketMeta
 from app.strategies.grid.ids import (
     CLIENT_ORDER_MAX,
+    MAX_LEVEL_PER_SIDE,
     grid_client_order_id,
+    grid_client_order_side_level,
     grid_prefix,
     is_grid_client_order,
 )
@@ -46,79 +48,18 @@ def _calc_base_qty(mode: str, value: Decimal, price: Decimal) -> Decimal:
     return value / price
 
 
-def _desired_orders(
-    symbol: str,
-    market_id: int,
-    center: Decimal,
-    step: Decimal,
-    strat: Dict[str, Any],
-    meta: MarketMeta,
-    bot_prefix: int,
-) -> Dict[int, Dict[str, Any]]:
-    levels_up = int(strat.get("levels_up") or 0)
-    levels_down = int(strat.get("levels_down") or 0)
-    levels_up = max(0, min(levels_up, 50))
-    levels_down = max(0, min(levels_down, 50))
-
-    size_mode = str(strat.get("order_size_mode") or "notional")
-    size_value = _safe_decimal(strat.get("order_size_value") or 0)
-    post_only = bool(strat.get("post_only", True))
-
-    result: Dict[int, Dict[str, Any]] = {}
-
-    for i in range(1, levels_up + 1):
-        price = center + (step * i)
-        if price <= 0:
-            continue
-        price_q = _quantize(price, meta.price_decimals, ROUND_HALF_UP)
-        base_qty = _calc_base_qty(size_mode, size_value, price_q)
-        base_qty_q = _quantize(base_qty, meta.size_decimals, ROUND_DOWN)
-        if base_qty_q <= 0:
-            continue
-        if base_qty_q < meta.min_base_amount:
-            continue
-        if (base_qty_q * price_q) < meta.min_quote_amount:
-            continue
-        oid = grid_client_order_id(bot_prefix, "ask", i)
-        if oid > CLIENT_ORDER_MAX:
-            continue
-        result[oid] = {
-            "symbol": symbol,
-            "market_id": market_id,
-            "client_order_index": oid,
-            "is_ask": True,
-            "price_int": _to_scaled_int(price_q, meta.price_decimals, ROUND_HALF_UP),
-            "base_amount_int": _to_scaled_int(base_qty_q, meta.size_decimals, ROUND_DOWN),
-            "post_only": post_only,
-        }
-
-    for i in range(1, levels_down + 1):
-        price = center - (step * i)
-        if price <= 0:
-            continue
-        price_q = _quantize(price, meta.price_decimals, ROUND_HALF_UP)
-        base_qty = _calc_base_qty(size_mode, size_value, price_q)
-        base_qty_q = _quantize(base_qty, meta.size_decimals, ROUND_DOWN)
-        if base_qty_q <= 0:
-            continue
-        if base_qty_q < meta.min_base_amount:
-            continue
-        if (base_qty_q * price_q) < meta.min_quote_amount:
-            continue
-        oid = grid_client_order_id(bot_prefix, "bid", i)
-        if oid > CLIENT_ORDER_MAX:
-            continue
-        result[oid] = {
-            "symbol": symbol,
-            "market_id": market_id,
-            "client_order_index": oid,
-            "is_ask": False,
-            "price_int": _to_scaled_int(price_q, meta.price_decimals, ROUND_HALF_UP),
-            "base_amount_int": _to_scaled_int(base_qty_q, meta.size_decimals, ROUND_DOWN),
-            "post_only": post_only,
-        }
-
-    return result
+def _order_price_decimal(order: Any, meta: MarketMeta) -> Decimal:
+    price = getattr(order, "price", None)
+    if price is not None:
+        try:
+            return Decimal(str(price))
+        except Exception:
+            pass
+    base_price = getattr(order, "base_price", 0)
+    try:
+        return Decimal(int(base_price)) / (Decimal(10) ** int(meta.price_decimals))
+    except Exception:
+        return Decimal(0)
 
 
 @dataclass
@@ -234,14 +175,13 @@ class BotManager:
                 center = _quantize(center, meta.price_decimals, ROUND_HALF_UP)
 
                 prefix = grid_prefix(trader.account_index, market_id, symbol)
-                desired = _desired_orders(symbol, market_id, center, step, strat, meta, prefix)
-                max_open_orders = int(strat.get("max_open_orders") or 0)
-                if max_open_orders > 0 and len(desired) > max_open_orders:
-                    keep = sorted(desired.items(), key=lambda kv: (kv[0] % 1000, kv[0]))[:max_open_orders]
-                    desired = dict(keep)
-
                 existing_orders = await trader.active_orders(market_id)
                 existing: Dict[int, Any] = {}
+                asks: list[Decimal] = []
+                bids: list[Decimal] = []
+                ask_levels: list[int] = []
+                bid_levels: list[int] = []
+
                 for o in existing_orders:
                     cid = int(getattr(o, "client_order_index", 0) or 0)
                     if cid <= 0:
@@ -249,62 +189,120 @@ class BotManager:
                     if not is_grid_client_order(prefix, cid):
                         continue
                     existing[cid] = o
-
-                cancels: Dict[int, int] = {}
-                creates: Dict[int, Dict[str, Any]] = {}
-
-                for cid, o in existing.items():
-                    if cid not in desired:
-                        cancels[cid] = cid
-
-                for cid, spec in desired.items():
-                    o = existing.get(cid)
-                    if not o:
-                        creates[cid] = spec
-                        continue
-                    is_ask = bool(getattr(o, "is_ask", False))
-                    base_price = int(getattr(o, "base_price", 0) or 0)
-                    base_size = int(getattr(o, "base_size", 0) or 0)
-                    if is_ask != bool(spec["is_ask"]) or base_price != int(spec["price_int"]) or base_size != int(spec["base_amount_int"]):
-                        cancels[cid] = cid
-
-                max_actions = 10
-                actions_done = 0
-
-                for cid in list(cancels.keys()):
-                    if actions_done >= max_actions:
-                        break
-                    if dry_run:
-                        self._logbus.publish(f"dry_run cancel symbol={symbol} market_id={market_id} id={cid}")
+                    side = "ask" if bool(getattr(o, "is_ask", False)) else "bid"
+                    price = _order_price_decimal(o, meta)
+                    if side == "ask":
+                        asks.append(price)
                     else:
-                        try:
-                            await trader.cancel_order(market_id, cid)
-                            self._logbus.publish(f"order.cancel symbol={symbol} market_id={market_id} id={cid}")
-                        except Exception as exc:
-                            self._logbus.publish(f"order.cancel.error symbol={symbol} id={cid} err={type(exc).__name__}:{exc}")
-                    actions_done += 1
+                        bids.append(price)
+                    lvl = grid_client_order_side_level(cid)
+                    if lvl:
+                        if lvl[0] == "ask":
+                            ask_levels.append(lvl[1])
+                        elif lvl[0] == "bid":
+                            bid_levels.append(lvl[1])
 
-                for cid, spec in list(creates.items()):
-                    if actions_done >= max_actions:
-                        break
-                    if dry_run:
-                        self._logbus.publish(
-                            f"dry_run create symbol={symbol} market_id={market_id} id={cid} ask={spec['is_ask']} price={spec['price_int']} size={spec['base_amount_int']}"
-                        )
-                    else:
-                        try:
-                            await trader.create_limit_order(
-                                market_id=market_id,
-                                client_order_index=cid,
-                                base_amount=int(spec["base_amount_int"]),
-                                price=int(spec["price_int"]),
-                                is_ask=bool(spec["is_ask"]),
-                                post_only=bool(spec["post_only"]),
+                levels_up = int(strat.get("levels_up") or 0)
+                levels_down = int(strat.get("levels_down") or 0)
+                levels_up = max(0, min(levels_up, MAX_LEVEL_PER_SIDE))
+                levels_down = max(0, min(levels_down, MAX_LEVEL_PER_SIDE))
+
+                size_mode = str(strat.get("order_size_mode") or "notional")
+                size_value = _safe_decimal(strat.get("order_size_value") or 0)
+                post_only = bool(strat.get("post_only", True))
+                max_open_orders = int(strat.get("max_open_orders") or 0)
+
+                ask_count = len(asks)
+                bid_count = len(bids)
+                total_existing = ask_count + bid_count
+
+                missing_asks = max(0, levels_up - ask_count)
+                missing_bids = max(0, levels_down - bid_count)
+
+                available_slots = missing_asks + missing_bids
+                if max_open_orders > 0:
+                    available_slots = max(0, max_open_orders - total_existing)
+
+                if available_slots > 0 and (missing_asks + missing_bids) > 0:
+                    highest_ask = max(asks) if asks else None
+                    lowest_bid = min(bids) if bids else None
+
+                    ask_start = highest_ask if highest_ask is not None else center
+                    bid_start = lowest_bid if lowest_bid is not None else center
+
+                    next_ask_level = max(ask_levels or [0]) + 1
+                    next_bid_level = max(bid_levels or [0]) + 1
+
+                    create_plan: list[str] = []
+                    slots = available_slots
+                    ma = missing_asks
+                    mb = missing_bids
+                    while slots > 0 and (ma > 0 or mb > 0):
+                        if ma > 0:
+                            create_plan.append("ask")
+                            ma -= 1
+                            slots -= 1
+                        if slots <= 0:
+                            break
+                        if mb > 0:
+                            create_plan.append("bid")
+                            mb -= 1
+                            slots -= 1
+
+                    ask_seq = 0
+                    bid_seq = 0
+                    for side in create_plan:
+                        if side == "ask":
+                            ask_seq += 1
+                            level = next_ask_level + ask_seq - 1
+                            if level > MAX_LEVEL_PER_SIDE:
+                                self._logbus.publish(f"grid.level_overflow symbol={symbol} side=ask level={level}")
+                                continue
+                            price = ask_start + (step * ask_seq)
+                        else:
+                            bid_seq += 1
+                            level = next_bid_level + bid_seq - 1
+                            if level > MAX_LEVEL_PER_SIDE:
+                                self._logbus.publish(f"grid.level_overflow symbol={symbol} side=bid level={level}")
+                                continue
+                            price = bid_start - (step * bid_seq)
+
+                        if price <= 0:
+                            continue
+
+                        price_q = _quantize(price, meta.price_decimals, ROUND_HALF_UP)
+                        base_qty = _calc_base_qty(size_mode, size_value, price_q)
+                        base_qty_q = _quantize(base_qty, meta.size_decimals, ROUND_DOWN)
+                        if base_qty_q <= 0:
+                            continue
+                        if base_qty_q < meta.min_base_amount:
+                            continue
+                        if (base_qty_q * price_q) < meta.min_quote_amount:
+                            continue
+
+                        oid = grid_client_order_id(prefix, side, level)
+                        if oid > CLIENT_ORDER_MAX:
+                            continue
+                        price_int = _to_scaled_int(price_q, meta.price_decimals, ROUND_HALF_UP)
+                        base_int = _to_scaled_int(base_qty_q, meta.size_decimals, ROUND_DOWN)
+
+                        if dry_run:
+                            self._logbus.publish(
+                                f"dry_run create symbol={symbol} market_id={market_id} id={oid} ask={side == 'ask'} price={price_int} size={base_int}"
                             )
-                            self._logbus.publish(f"order.create symbol={symbol} market_id={market_id} id={cid}")
-                        except Exception as exc:
-                            self._logbus.publish(f"order.create.error symbol={symbol} id={cid} err={type(exc).__name__}:{exc}")
-                    actions_done += 1
+                        else:
+                            try:
+                                await trader.create_limit_order(
+                                    market_id=market_id,
+                                    client_order_index=oid,
+                                    base_amount=int(base_int),
+                                    price=int(price_int),
+                                    is_ask=(side == "ask"),
+                                    post_only=post_only,
+                                )
+                                self._logbus.publish(f"order.create symbol={symbol} market_id={market_id} id={oid}")
+                            except Exception as exc:
+                                self._logbus.publish(f"order.create.error symbol={symbol} id={oid} err={type(exc).__name__}:{exc}")
 
                 msg = "模拟运行" if dry_run else "实盘运行"
                 await self._update_status(
@@ -315,7 +313,7 @@ class BotManager:
                     market_id=market_id,
                     mid=str(mid),
                     center=str(center),
-                    desired=len(desired),
+                    desired=(levels_up + levels_down),
                     existing=len(existing),
                 )
         except asyncio.CancelledError:
