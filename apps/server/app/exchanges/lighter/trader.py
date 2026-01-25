@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.exchanges.lighter.public_api import base_url
+from app.exchanges.types import MarketMeta
 
 
 def _parse_auth_expiry(auth_token: str) -> Optional[int]:
@@ -15,16 +15,6 @@ def _parse_auth_expiry(auth_token: str) -> Optional[int]:
         return int(first)
     except Exception:
         return None
-
-
-@dataclass
-class MarketMeta:
-    market_id: int
-    symbol: str
-    size_decimals: int
-    price_decimals: int
-    min_base_amount: Decimal
-    min_quote_amount: Decimal
 
 
 class LighterTrader:
@@ -41,6 +31,7 @@ class LighterTrader:
         self.url = base_url(env)
         self.account_index = int(account_index)
         self.api_key_index = int(api_key_index)
+        self.account_key = self.account_index
 
         self._nonce_lock = asyncio.Lock()
         self._signer = lighter.SignerClient(
@@ -153,4 +144,3 @@ class LighterTrader:
             raise RuntimeError(err)
         if getattr(resp, "code", 0) not in (0, 200):
             raise RuntimeError(f"send_tx code={getattr(resp, 'code', None)} msg={getattr(resp, 'message', None)}")
-

@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional
 
 from app.core.config_store import ConfigStore
 from app.core.logbus import LogBus
-from app.exchanges.lighter.trader import LighterTrader, MarketMeta
+from app.exchanges.types import MarketMeta, Trader
 from app.strategies.grid.ids import (
     CLIENT_ORDER_MAX,
     MAX_LEVEL_PER_SIDE,
@@ -48,14 +48,20 @@ def _calc_base_qty(mode: str, value: Decimal, price: Decimal) -> Decimal:
     return value / price
 
 
+def _order_field(order: Any, name: str) -> Any:
+    if isinstance(order, dict):
+        return order.get(name)
+    return getattr(order, name, None)
+
+
 def _order_price_decimal(order: Any, meta: MarketMeta) -> Decimal:
-    price = getattr(order, "price", None)
+    price = _order_field(order, "price")
     if price is not None:
         try:
             return Decimal(str(price))
         except Exception:
             pass
-    base_price = getattr(order, "base_price", 0)
+    base_price = _order_field(order, "base_price") or 0
     try:
         return Decimal(int(base_price)) / (Decimal(10) ** int(meta.price_decimals))
     except Exception:
@@ -73,6 +79,43 @@ def _unique_prices(values: list[Decimal]) -> list[Decimal]:
     return result
 
 
+def _order_client_id(order: Any) -> Optional[int]:
+    for key in ("client_order_index", "client_id", "client_order_id", "clientOrderId"):
+        value = _order_field(order, key)
+        if value is None:
+            continue
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            v = value.strip()
+            if v.isdigit():
+                return int(v)
+    return None
+
+
+def _order_id(order: Any) -> Any:
+    for key in ("order_index", "id", "order_id"):
+        value = _order_field(order, key)
+        if value is None:
+            continue
+        return value
+    return None
+
+
+def _order_side(order: Any) -> Optional[str]:
+    is_ask = _order_field(order, "is_ask")
+    if isinstance(is_ask, bool):
+        return "ask" if is_ask else "bid"
+    side = _order_field(order, "side") or _order_field(order, "order_side")
+    if isinstance(side, str):
+        upper = side.upper()
+        if upper in ("SELL", "ASK"):
+            return "ask"
+        if upper in ("BUY", "BID"):
+            return "bid"
+    return None
+
+
 @dataclass
 class BotStatus:
     symbol: str
@@ -80,7 +123,7 @@ class BotStatus:
     started_at: Optional[str] = None
     last_tick_at: Optional[str] = None
     message: str = ""
-    market_id: Optional[int] = None
+    market_id: Optional[str | int] = None
     mid: Optional[str] = None
     center: Optional[str] = None
     desired: int = 0
@@ -109,7 +152,7 @@ class BotManager:
         self._status: Dict[str, BotStatus] = {}
         self._lock = asyncio.Lock()
 
-    async def start(self, symbol: str, trader: LighterTrader) -> None:
+    async def start(self, symbol: str, trader: Trader) -> None:
         symbol = symbol.upper()
         async with self._lock:
             task = self._tasks.get(symbol)
@@ -151,7 +194,7 @@ class BotManager:
     def snapshot(self) -> Dict[str, Any]:
         return {k: v.to_dict() for k, v in self._status.items()}
 
-    async def _run(self, symbol: str, trader: LighterTrader) -> None:
+    async def _run(self, symbol: str, trader: Trader) -> None:
         interval_s = 0.1
         try:
             while True:
@@ -173,8 +216,12 @@ class BotManager:
                     await self._update_status(symbol, running=True, message="已禁用", last_tick_at=_now_iso())
                     continue
 
-                market_id = strat.get("market_id")
-                if not isinstance(market_id, int):
+                market_value = strat.get("market_id")
+                if isinstance(market_value, str):
+                    market_id = market_value.strip()
+                else:
+                    market_id = market_value
+                if market_id is None or (isinstance(market_id, str) and not market_id):
                     await self._update_status(symbol, running=True, message="未配置 market_id", last_tick_at=_now_iso())
                     continue
 
@@ -193,7 +240,7 @@ class BotManager:
                 center = (mid / step).to_integral_value(rounding=ROUND_HALF_UP) * step
                 center = _quantize(center, meta.price_decimals, ROUND_HALF_UP)
 
-                prefix = grid_prefix(trader.account_index, market_id, symbol)
+                prefix = grid_prefix(trader.account_key, market_id, symbol)
                 existing_orders = await trader.active_orders(market_id)
                 existing: Dict[int, Any] = {}
                 asks_by_price: Dict[Decimal, list[Any]] = {}
@@ -202,13 +249,15 @@ class BotManager:
                 bid_used_levels: set[int] = set()
 
                 for o in existing_orders:
-                    cid = int(getattr(o, "client_order_index", 0) or 0)
-                    if cid <= 0:
+                    cid = _order_client_id(o)
+                    if cid is None or cid <= 0:
                         continue
                     if not is_grid_client_order(prefix, cid):
                         continue
                     existing[cid] = o
-                    side = "ask" if bool(getattr(o, "is_ask", False)) else "bid"
+                    side = _order_side(o)
+                    if side is None:
+                        continue
                     price = _order_price_decimal(o, meta)
                     price_q = _quantize(price, meta.price_decimals, ROUND_HALF_UP)
                     if side == "ask":
@@ -288,9 +337,9 @@ class BotManager:
 
                 if cancel_orders:
                     for o, price_q in cancel_orders:
-                        order_index = int(getattr(o, "order_index", 0) or 0)
-                        client_index = int(getattr(o, "client_order_index", 0) or 0)
-                        if order_index <= 0:
+                        order_index = _order_id(o)
+                        client_index = _order_client_id(o) or 0
+                        if order_index is None or (isinstance(order_index, int) and order_index <= 0):
                             self._logbus.publish(
                                 f"order.cancel.error symbol={symbol} market_id={market_id} client_id={client_index} err=missing_order_index"
                             )

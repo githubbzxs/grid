@@ -35,6 +35,7 @@ def default_config() -> dict[str, Any]:
             "port": 9999,
         },
         "exchange": {
+            "name": "lighter",
             "env": "mainnet",
             "l1_address": "",
             "account_index": None,
@@ -42,6 +43,10 @@ def default_config() -> dict[str, Any]:
             "remember_secrets": True,
             "api_private_key_enc": "",
             "eth_private_key_enc": "",
+            "paradex_l1_address": "",
+            "paradex_l2_address": "",
+            "paradex_l1_private_key_enc": "",
+            "paradex_l2_private_key_enc": "",
         },
         "strategies": {
             "BTC": {

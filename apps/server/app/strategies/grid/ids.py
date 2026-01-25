@@ -10,8 +10,8 @@ MAX_LEVEL_PER_SIDE = 3_999
 CLIENT_ORDER_MAX = 281_474_976_710_655
 
 
-def grid_prefix(account_index: int, market_id: int, symbol: str) -> int:
-    raw = f"{account_index}:{market_id}:{symbol}".encode("utf-8")
+def grid_prefix(account_key: str | int, market_id: str | int, symbol: str) -> int:
+    raw = f"{account_key}:{market_id}:{symbol}".encode("utf-8")
     return zlib.crc32(raw) % CLIENT_ORDER_PREFIX_MOD
 
 
@@ -22,7 +22,11 @@ def grid_client_order_id(prefix: int, side: str, level: int) -> int:
 
 
 def is_grid_client_order(prefix: int, client_order_index: int) -> bool:
-    return int(client_order_index) // CLIENT_ORDER_BLOCK == int(prefix)
+    try:
+        cid = int(client_order_index)
+    except Exception:
+        return False
+    return cid // CLIENT_ORDER_BLOCK == int(prefix)
 
 
 def grid_client_order_side_level(client_order_index: int) -> tuple[str, int] | None:

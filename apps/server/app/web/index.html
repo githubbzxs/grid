@@ -43,8 +43,15 @@
 
       <div class="grid" id="app-area" hidden>
         <div class="card">
-          <h2>交易所配置（Lighter）</h2>
+          <h2>交易所配置</h2>
           <div class="row">
+            <div>
+              <label>交易所</label>
+              <select id="ex-name">
+                <option value="lighter">Lighter</option>
+                <option value="paradex">Paradex</option>
+              </select>
+            </div>
             <div>
               <label>网络</label>
               <select id="ex-env">
@@ -52,37 +59,70 @@
                 <option value="testnet">testnet</option>
               </select>
             </div>
-            <div>
-              <label>L1 地址</label>
-              <input id="ex-l1" placeholder="0x..." />
-            </div>
           </div>
-          <div class="row">
-            <div>
-              <label>account_index</label>
-              <input id="ex-account" placeholder="可手填，后续会支持自动查询" />
-              <div class="btns" style="margin-top: 8px">
-                <button id="btn-resolve-account">自动查询</button>
+
+          <div id="lighter-fields">
+            <div class="row">
+              <div>
+                <label>L1 地址</label>
+                <input id="ex-l1" placeholder="0x..." />
               </div>
-              <div class="hint">会根据 L1 地址调用公开接口查询主账户的 account_index。</div>
+              <div>
+                <label>account_index</label>
+                <input id="ex-account" placeholder="可手填，后续会支持自动查询" />
+                <div class="btns" style="margin-top: 8px">
+                  <button id="btn-resolve-account">自动查询</button>
+                </div>
+                <div class="hint">会根据 L1 地址调用公开接口查询主账户的 account_index。</div>
+              </div>
             </div>
-            <div>
-              <label>api_key_index</label>
-              <input id="ex-key-index" placeholder="例如 3" />
+            <div class="row">
+              <div>
+                <label>api_key_index</label>
+                <input id="ex-key-index" placeholder="例如 3" />
+              </div>
+              <div>
+                <label>API 私钥</label>
+                <input id="ex-api-key" type="password" placeholder="留空表示不修改" />
+                <div class="hint" id="ex-api-key-hint"></div>
+              </div>
+            </div>
+            <div class="row">
+              <div>
+                <label>ETH 私钥（可选）</label>
+                <input id="ex-eth-key" type="password" placeholder="留空表示不修改" />
+                <div class="hint" id="ex-eth-key-hint"></div>
+              </div>
+              <div></div>
             </div>
           </div>
-          <div class="row">
-            <div>
-              <label>API 私钥</label>
-              <input id="ex-api-key" type="password" placeholder="留空表示不修改" />
-              <div class="hint" id="ex-api-key-hint"></div>
+
+          <div id="paradex-fields" hidden>
+            <div class="row">
+              <div>
+                <label>L1 地址（可选）</label>
+                <input id="px-l1" placeholder="0x..." />
+              </div>
+              <div>
+                <label>L1 私钥（可选）</label>
+                <input id="px-l1-key" type="password" placeholder="留空表示不修改" />
+                <div class="hint" id="px-l1-key-hint"></div>
+              </div>
             </div>
-            <div>
-              <label>ETH 私钥（可选）</label>
-              <input id="ex-eth-key" type="password" placeholder="留空表示不修改" />
-              <div class="hint" id="ex-eth-key-hint"></div>
+            <div class="row">
+              <div>
+                <label>L2 地址（推荐）</label>
+                <input id="px-l2" placeholder="0x..." />
+                <div class="hint">推荐使用 L2 子密钥（subkey），只填 L2 地址与 L2 私钥即可。</div>
+              </div>
+              <div>
+                <label>L2 私钥（推荐）</label>
+                <input id="px-l2-key" type="password" placeholder="留空表示不修改" />
+                <div class="hint" id="px-l2-key-hint"></div>
+              </div>
             </div>
           </div>
+
           <div class="row">
             <div>
               <label>记住密钥</label>
@@ -112,7 +152,7 @@
 
         <div class="card">
           <h2>策略配置（无限网格）</h2>
-          <div class="hint">先从“perp 市场列表”里找到 market_id，然后填到对应标的。</div>
+          <div class="hint">先从“perp 市场列表”里找到 market_id（Lighter 为数字，Paradex 为市场符号），然后填到对应标的。</div>
           <table class="table">
             <thead>
               <tr>
@@ -130,7 +170,7 @@
               <tr>
                 <td class="mono">BTC</td>
                 <td><input id="st-btc-enabled" type="checkbox" /></td>
-                <td><input id="st-btc-market" placeholder="例如 0" /></td>
+                <td><input id="st-btc-market" placeholder="例如 0 或 ETH-USD-PERP" /></td>
                 <td><input id="st-btc-step" placeholder="例如 5" /></td>
                 <td><input id="st-btc-up" placeholder="10" /></td>
                 <td><input id="st-btc-down" placeholder="10" /></td>
@@ -145,7 +185,7 @@
               <tr>
                 <td class="mono">ETH</td>
                 <td><input id="st-eth-enabled" type="checkbox" /></td>
-                <td><input id="st-eth-market" placeholder="例如 0" /></td>
+                <td><input id="st-eth-market" placeholder="例如 0 或 ETH-USD-PERP" /></td>
                 <td><input id="st-eth-step" placeholder="例如 5" /></td>
                 <td><input id="st-eth-up" placeholder="10" /></td>
                 <td><input id="st-eth-down" placeholder="10" /></td>
@@ -160,7 +200,7 @@
               <tr>
                 <td class="mono">SOL</td>
                 <td><input id="st-sol-enabled" type="checkbox" /></td>
-                <td><input id="st-sol-market" placeholder="例如 0" /></td>
+                <td><input id="st-sol-market" placeholder="例如 0 或 SOL-USD-PERP" /></td>
                 <td><input id="st-sol-step" placeholder="例如 1" /></td>
                 <td><input id="st-sol-up" placeholder="10" /></td>
                 <td><input id="st-sol-down" placeholder="10" /></td>

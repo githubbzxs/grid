@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import secrets
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -15,8 +16,11 @@ from app.core.config_store import ConfigStore, default_data_dir
 from app.core.logbus import LogBus
 from app.core.security import decrypt_str, derive_fernet, encrypt_str, new_salt_b64, password_hash_b64, verify_password
 from app.exchanges.lighter.public_api import LighterPublicClient, base_url as lighter_base_url
-from app.exchanges.lighter.sdk_ops import fetch_perp_markets, test_connection as lighter_test_connection
+from app.exchanges.lighter.sdk_ops import fetch_perp_markets as lighter_fetch_perp_markets, test_connection as lighter_test_connection
 from app.exchanges.lighter.trader import LighterTrader
+from app.exchanges.paradex.sdk_ops import fetch_perp_markets as paradex_fetch_perp_markets, test_connection as paradex_test_connection
+from app.exchanges.paradex.trader import ParadexTrader
+from app.exchanges.types import Trader
 from app.services.bot_manager import BotManager
 from app.strategies.grid.ids import grid_prefix, is_grid_client_order
 
@@ -59,12 +63,105 @@ def require_unlocked(request: Request) -> Fernet:
     return fernet
 
 
+def _exchange_name(config: Dict[str, Any], override: Optional[str] = None) -> str:
+    raw = override if override is not None else (config.get("exchange", {}) or {}).get("name")
+    name = str(raw or "lighter").strip().lower()
+    return "paradex" if name == "paradex" else "lighter"
+
+
+def _safe_str(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _to_int(value: Any) -> Optional[int]:
+    try:
+        if value is None:
+            return None
+        return int(str(value).strip())
+    except Exception:
+        return None
+
+
+def _secret_fingerprint(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+
+def _order_field(order: Any, name: str) -> Any:
+    if isinstance(order, dict):
+        return order.get(name)
+    return getattr(order, name, None)
+
+
+def _order_client_id(order: Any) -> Optional[int]:
+    for key in ("client_order_index", "client_id", "client_order_id", "clientOrderId"):
+        value = _order_field(order, key)
+        if value is None:
+            continue
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            v = value.strip()
+            if v.isdigit():
+                return int(v)
+    return None
+
+
+def _order_id(order: Any) -> Any:
+    for key in ("order_index", "id", "order_id"):
+        value = _order_field(order, key)
+        if value is None:
+            continue
+        return value
+    return None
+
+
+def _order_side(order: Any) -> Optional[str]:
+    is_ask = _order_field(order, "is_ask")
+    if isinstance(is_ask, bool):
+        return "ask" if is_ask else "bid"
+    side = _order_field(order, "side") or _order_field(order, "order_side")
+    if isinstance(side, str):
+        upper = side.upper()
+        if upper in ("SELL", "ASK"):
+            return "ask"
+        if upper in ("BUY", "BID"):
+            return "bid"
+    return None
+
+
+def _order_to_dict(order: Any) -> Dict[str, Any]:
+    if isinstance(order, dict):
+        data = dict(order)
+    elif hasattr(order, "model_dump"):
+        data = order.model_dump()
+    elif hasattr(order, "to_dict"):
+        data = order.to_dict()
+    elif hasattr(order, "__dict__"):
+        data = dict(order.__dict__)
+    else:
+        data = {"raw": str(order)}
+
+    data.setdefault("client_id", _order_client_id(order))
+    data.setdefault("order_id", _order_id(order))
+    data.setdefault("side", _order_side(order))
+    return data
+
+
 def _mask_config(config: Dict[str, Any]) -> Dict[str, Any]:
     exchange = dict(config.get("exchange", {}))
     exchange.pop("api_private_key_enc", None)
     exchange.pop("eth_private_key_enc", None)
+    exchange.pop("paradex_l1_private_key_enc", None)
+    exchange.pop("paradex_l2_private_key_enc", None)
     exchange["api_private_key_set"] = bool(config.get("exchange", {}).get("api_private_key_enc"))
     exchange["eth_private_key_set"] = bool(config.get("exchange", {}).get("eth_private_key_enc"))
+    exchange["paradex_l1_private_key_set"] = bool(config.get("exchange", {}).get("paradex_l1_private_key_enc"))
+    exchange["paradex_l2_private_key_set"] = bool(config.get("exchange", {}).get("paradex_l2_private_key_enc"))
     result = dict(config)
     result["exchange"] = exchange
     return result
@@ -86,6 +183,8 @@ async def _startup() -> None:
     app.state.runtime_secrets = {}
     app.state.lighter_trader = None
     app.state.lighter_trader_sig = None
+    app.state.paradex_trader = None
+    app.state.paradex_trader_sig = None
     app.state.logbus.publish("server.start")
 
 
@@ -94,6 +193,9 @@ async def _shutdown() -> None:
     trader: Optional[LighterTrader] = getattr(app.state, "lighter_trader", None)
     if trader:
         await trader.close()
+    p_trader: Optional[ParadexTrader] = getattr(app.state, "paradex_trader", None)
+    if p_trader:
+        await p_trader.close()
 
 
 @app.get("/")
@@ -199,6 +301,8 @@ async def update_config(
     exchange_patch = dict(patch.get("exchange") or {})
     plaintext_api_key = exchange_patch.pop("api_private_key", None)
     plaintext_eth_key = exchange_patch.pop("eth_private_key", None)
+    plaintext_paradex_l1_key = exchange_patch.pop("paradex_l1_private_key", None)
+    plaintext_paradex_l2_key = exchange_patch.pop("paradex_l2_private_key", None)
 
     if "exchange" in patch:
         patch = dict(patch)
@@ -225,6 +329,22 @@ async def update_config(
             merged["exchange"]["eth_private_key_enc"] = ""
             runtime_secrets["eth_private_key"] = str(plaintext_eth_key)
 
+    if plaintext_paradex_l1_key is not None:
+        if remember:
+            merged["exchange"]["paradex_l1_private_key_enc"] = encrypt_str(fernet, str(plaintext_paradex_l1_key))
+            runtime_secrets.pop("paradex_l1_private_key", None)
+        else:
+            merged["exchange"]["paradex_l1_private_key_enc"] = ""
+            runtime_secrets["paradex_l1_private_key"] = str(plaintext_paradex_l1_key)
+
+    if plaintext_paradex_l2_key is not None:
+        if remember:
+            merged["exchange"]["paradex_l2_private_key_enc"] = encrypt_str(fernet, str(plaintext_paradex_l2_key))
+            runtime_secrets.pop("paradex_l2_private_key", None)
+        else:
+            merged["exchange"]["paradex_l2_private_key_enc"] = ""
+            runtime_secrets["paradex_l2_private_key"] = str(plaintext_paradex_l2_key)
+
     request.app.state.config.write(merged)
     request.app.state.logbus.publish("config.update")
     return {"ok": True, "config": _mask_config(merged)}
@@ -237,7 +357,7 @@ async def bots_status(request: Request, _: str = Depends(require_auth)) -> Dict[
 
 @app.post("/api/bots/start")
 async def bots_start(body: BotSymbolsBody, request: Request, _: str = Depends(require_unlocked)) -> Dict[str, Any]:
-    trader = await _ensure_lighter_trader(request)
+    trader = await _ensure_trader(request)
     for symbol in body.symbols:
         await request.app.state.bot_manager.start(symbol.upper(), trader)
     return {"ok": True, "bots": request.app.state.bot_manager.snapshot()}
@@ -254,40 +374,59 @@ async def bots_stop(body: BotSymbolsBody, request: Request, _: str = Depends(req
 async def bots_emergency_stop(request: Request, _: str = Depends(require_auth)) -> Dict[str, Any]:
     await request.app.state.bot_manager.stop_all()
     canceled: Dict[str, int] = {}
-    trader: Optional[LighterTrader] = request.app.state.lighter_trader
-    if trader:
-        config: Dict[str, Any] = request.app.state.config.read()
-        strategies = config.get("strategies", {}) or {}
-        for symbol, strat in strategies.items():
-            if not isinstance(strat, dict):
+    config: Dict[str, Any] = request.app.state.config.read()
+    exchange_name = _exchange_name(config)
+    trader: Optional[Trader]
+    if exchange_name == "paradex":
+        trader = request.app.state.paradex_trader
+    else:
+        trader = request.app.state.lighter_trader
+
+    if trader is None:
+        try:
+            trader = await _ensure_trader(request, exchange_name)
+        except Exception as exc:
+            request.app.state.logbus.publish(f"emergency.init.error exchange={exchange_name} err={type(exc).__name__}:{exc}")
+            request.app.state.logbus.publish("bots.emergency_stop")
+            return {"ok": True, "canceled": canceled, "bots": request.app.state.bot_manager.snapshot()}
+
+    strategies = config.get("strategies", {}) or {}
+    for symbol, strat in strategies.items():
+        if not isinstance(strat, dict):
+            continue
+        market_id = strat.get("market_id")
+        if market_id is None or (isinstance(market_id, str) and not market_id.strip()):
+            continue
+        try:
+            orders = await trader.active_orders(market_id)
+        except Exception as exc:
+            request.app.state.logbus.publish(f"emergency.list.error symbol={symbol} err={type(exc).__name__}:{exc}")
+            continue
+
+        prefix = grid_prefix(trader.account_key, market_id, symbol)
+        targets: list[tuple[Any, int]] = []
+        for o in orders:
+            cid = _order_client_id(o)
+            if cid is None or cid <= 0:
                 continue
-            market_id = strat.get("market_id")
-            if not isinstance(market_id, int):
+            if not is_grid_client_order(prefix, cid):
                 continue
+            oid = _order_id(o)
+            if oid is None:
+                continue
+            if isinstance(oid, int) and oid <= 0:
+                continue
+            targets.append((oid, cid))
+
+        count = 0
+        for oid, cid in targets[:200]:
             try:
-                orders = await trader.active_orders(market_id)
+                await trader.cancel_order(market_id, oid)
+                count += 1
             except Exception as exc:
-                request.app.state.logbus.publish(f"emergency.list.error symbol={symbol} err={type(exc).__name__}:{exc}")
-                continue
-
-            prefix = grid_prefix(trader.account_index, market_id, symbol)
-            targets: list[tuple[int, int]] = []
-            for o in orders:
-                cid = int(getattr(o, "client_order_index", 0) or 0)
-                if cid > 0 and is_grid_client_order(prefix, cid):
-                    oid = int(getattr(o, "order_index", 0) or 0)
-                    if oid > 0:
-                        targets.append((oid, cid))
-
-            count = 0
-            for oid, cid in targets[:200]:
-                try:
-                    await trader.cancel_order(market_id, oid)
-                    count += 1
-                except Exception as exc:
-                    request.app.state.logbus.publish(f"emergency.cancel.error symbol={symbol} id={cid} err={type(exc).__name__}:{exc}")
-            if count:
-                canceled[symbol] = count
+                request.app.state.logbus.publish(f"emergency.cancel.error symbol={symbol} id={cid} err={type(exc).__name__}:{exc}")
+        if count:
+            canceled[symbol] = count
     request.app.state.logbus.publish("bots.emergency_stop")
     return {"ok": True, "canceled": canceled, "bots": request.app.state.bot_manager.snapshot()}
 
@@ -300,6 +439,134 @@ async def logs_recent(request: Request, _: str = Depends(require_auth)) -> Dict[
 @app.get("/api/logs/stream")
 async def logs_stream(request: Request, _: str = Depends(require_auth)) -> StreamingResponse:
     return StreamingResponse(request.app.state.logbus.stream(), media_type="text/event-stream")
+
+
+@app.get("/api/exchange/markets")
+async def exchange_markets(
+    request: Request,
+    env: str = "mainnet",
+    exchange: Optional[str] = None,
+    _: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    config: Dict[str, Any] = request.app.state.config.read()
+    name = _exchange_name(config, exchange)
+    try:
+        if name == "paradex":
+            items = await paradex_fetch_perp_markets(env)
+        else:
+            items = await lighter_fetch_perp_markets(env)
+    except Exception as exc:
+        request.app.state.logbus.publish(f"exchange.markets error={type(exc).__name__}:{exc}")
+        raise HTTPException(status_code=502, detail="查询市场失败")
+    return {"exchange": name, "items": items}
+
+
+@app.post("/api/exchange/test_connection")
+async def exchange_test_connection(
+    request: Request,
+    exchange: Optional[str] = None,
+    _: str = Depends(require_unlocked),
+) -> Dict[str, Any]:
+    config: Dict[str, Any] = request.app.state.config.read()
+    ex = config.get("exchange", {}) or {}
+    env = str(ex.get("env") or "mainnet")
+    name = _exchange_name(config, exchange)
+    if name == "paradex":
+        l1_address = _safe_str(ex.get("paradex_l1_address"))
+        l2_address = _safe_str(ex.get("paradex_l2_address"))
+        l1_key = _get_secret(request, "paradex_l1_private_key")
+        l2_key = _get_secret(request, "paradex_l2_private_key")
+        if not ((l2_address and l2_key) or (l1_address and l1_key)):
+            raise HTTPException(status_code=400, detail="请先配置 Paradex L2 或 L1 私钥")
+        try:
+            result = await paradex_test_connection(env, l1_address, l1_key, l2_address, l2_key)
+        except Exception as exc:
+            request.app.state.logbus.publish(f"paradex.test_connection error={type(exc).__name__}:{exc}")
+            raise HTTPException(status_code=502, detail="测试失败")
+        return {"exchange": name, "result": result}
+
+    account_index = _to_int(ex.get("account_index"))
+    api_key_index = _to_int(ex.get("api_key_index"))
+    api_private_key = _get_secret(request, "api_private_key")
+    if account_index is None or api_key_index is None or not api_private_key:
+        raise HTTPException(status_code=400, detail="请先完整配置 account_index、api_key_index、API 私钥")
+    try:
+        result = await lighter_test_connection(env, int(account_index), int(api_key_index), api_private_key)
+    except Exception as exc:
+        request.app.state.logbus.publish(f"lighter.test_connection error={type(exc).__name__}:{exc}")
+        raise HTTPException(status_code=502, detail="测试失败")
+    return {"exchange": name, "result": result}
+
+
+@app.get("/api/exchange/active_orders")
+async def exchange_active_orders(
+    request: Request,
+    symbol: str = "BTC",
+    mine: bool = True,
+    exchange: Optional[str] = None,
+    _: str = Depends(require_unlocked),
+) -> Dict[str, Any]:
+    symbol = symbol.upper()
+    config: Dict[str, Any] = request.app.state.config.read()
+    name = _exchange_name(config, exchange)
+    strat = (config.get("strategies", {}) or {}).get(symbol, {}) or {}
+    market_id = strat.get("market_id")
+    if market_id is None or (isinstance(market_id, str) and not market_id.strip()):
+        raise HTTPException(status_code=400, detail="未配置 market_id")
+
+    trader = await _ensure_trader(request, name)
+    orders = await trader.active_orders(market_id)
+    prefix = grid_prefix(trader.account_key, market_id, symbol)
+
+    items: list[Dict[str, Any]] = []
+    for o in orders:
+        cid = _order_client_id(o)
+        if mine and (cid is None or not is_grid_client_order(prefix, cid)):
+            continue
+        items.append(_order_to_dict(o))
+    return {"exchange": name, "symbol": symbol, "market_id": market_id, "orders": items}
+
+
+@app.get("/api/exchange/account_snapshot")
+async def exchange_account_snapshot(
+    request: Request,
+    exchange: Optional[str] = None,
+    _: str = Depends(require_unlocked),
+) -> Dict[str, Any]:
+    config: Dict[str, Any] = request.app.state.config.read()
+    name = _exchange_name(config, exchange)
+    ex = config.get("exchange", {}) or {}
+    if name == "paradex":
+        trader = await _ensure_paradex_trader(request)
+        summary = trader._api.fetch_account_summary()
+        if hasattr(summary, "model_dump"):
+            data = summary.model_dump()
+        elif hasattr(summary, "to_dict"):
+            data = summary.to_dict()
+        else:
+            data = getattr(summary, "__dict__", {"raw": str(summary)})
+        return {"exchange": name, "account": data}
+
+    account_index = _to_int(ex.get("account_index"))
+    if account_index is None:
+        raise HTTPException(status_code=400, detail="未配置 account_index")
+
+    import lighter
+
+    url = lighter_base_url(str(ex.get("env") or "mainnet"))
+    api_client = lighter.ApiClient(configuration=lighter.Configuration(host=url))
+    try:
+        account_api = lighter.AccountApi(api_client)
+        resp = await account_api.account(by="index", value=str(int(account_index)))
+        if hasattr(resp, "model_dump"):
+            data = resp.model_dump()
+        elif hasattr(resp, "to_dict"):
+            data = resp.to_dict()
+        else:
+            data = {"raw": str(resp)}
+        return {"exchange": name, "account": data}
+    finally:
+        await api_client.close()
 
 
 @app.post("/api/lighter/resolve_account_index")
@@ -322,7 +589,7 @@ async def lighter_resolve_account_index(
 @app.get("/api/lighter/markets")
 async def lighter_markets(request: Request, env: str = "mainnet", _: str = Depends(require_auth)) -> Dict[str, Any]:
     try:
-        items = await fetch_perp_markets(env)
+        items = await lighter_fetch_perp_markets(env)
     except Exception as exc:
         request.app.state.logbus.publish(f"lighter.markets error={type(exc).__name__}:{exc}")
         raise HTTPException(status_code=502, detail="查询市场失败")
@@ -334,10 +601,10 @@ async def lighter_test(request: Request, _: str = Depends(require_unlocked)) -> 
     config: Dict[str, Any] = request.app.state.config.read()
     ex = config.get("exchange", {})
     env = str(ex.get("env") or "mainnet")
-    account_index = ex.get("account_index")
-    api_key_index = ex.get("api_key_index")
+    account_index = _to_int(ex.get("account_index"))
+    api_key_index = _to_int(ex.get("api_key_index"))
     api_private_key = _get_secret(request, "api_private_key")
-    if not isinstance(account_index, int) or not isinstance(api_key_index, int) or not api_private_key:
+    if account_index is None or api_key_index is None or not api_private_key:
         raise HTTPException(status_code=400, detail="请先完整配置 account_index、api_key_index、API 私钥")
     try:
         result = await lighter_test_connection(env, int(account_index), int(api_key_index), api_private_key)
@@ -358,12 +625,12 @@ async def lighter_active_orders(
     config: Dict[str, Any] = request.app.state.config.read()
     strat = (config.get("strategies", {}) or {}).get(symbol, {}) or {}
     market_id = strat.get("market_id")
-    if not isinstance(market_id, int):
+    if market_id is None or (isinstance(market_id, str) and not market_id.strip()):
         raise HTTPException(status_code=400, detail="未配置 market_id")
 
     trader = await _ensure_lighter_trader(request)
     orders = await trader.active_orders(market_id)
-    prefix = grid_prefix(trader.account_index, market_id, symbol)
+    prefix = grid_prefix(trader.account_key, market_id, symbol)
 
     items = []
     for o in orders:
@@ -392,8 +659,8 @@ async def lighter_account_snapshot(request: Request, _: str = Depends(require_au
     config: Dict[str, Any] = request.app.state.config.read()
     ex = config.get("exchange", {})
     env = str(ex.get("env") or "mainnet")
-    account_index = ex.get("account_index")
-    if not isinstance(account_index, int):
+    account_index = _to_int(ex.get("account_index"))
+    if account_index is None:
         raise HTTPException(status_code=400, detail="未配置 account_index")
 
     import lighter
@@ -427,6 +694,8 @@ def _get_secret(request: Request, name: str) -> Optional[str]:
     enc_field = {
         "api_private_key": "api_private_key_enc",
         "eth_private_key": "eth_private_key_enc",
+        "paradex_l1_private_key": "paradex_l1_private_key_enc",
+        "paradex_l2_private_key": "paradex_l2_private_key_enc",
     }.get(name)
     if not enc_field:
         return None
@@ -439,17 +708,62 @@ def _get_secret(request: Request, name: str) -> Optional[str]:
         return None
 
 
+async def _ensure_paradex_trader(request: Request) -> ParadexTrader:
+    config: Dict[str, Any] = request.app.state.config.read()
+    ex = config.get("exchange", {})
+    env = str(ex.get("env") or "mainnet")
+    l1_address = _safe_str(ex.get("paradex_l1_address"))
+    l2_address = _safe_str(ex.get("paradex_l2_address"))
+    l1_private_key = _get_secret(request, "paradex_l1_private_key")
+    l2_private_key = _get_secret(request, "paradex_l2_private_key")
+    if not ((l2_address and l2_private_key) or (l1_address and l1_private_key)):
+        raise HTTPException(status_code=400, detail="请先配置 Paradex L2 或 L1 私钥")
+
+    sig = (env, l1_address, l2_address, _secret_fingerprint(l1_private_key), _secret_fingerprint(l2_private_key))
+    existing: Optional[ParadexTrader] = request.app.state.paradex_trader
+    existing_sig = request.app.state.paradex_trader_sig
+    if existing and existing_sig == sig:
+        return existing
+
+    if existing:
+        await existing.close()
+
+    trader = ParadexTrader(
+        env=env,
+        l1_address=l1_address,
+        l1_private_key=l1_private_key,
+        l2_address=l2_address,
+        l2_private_key=l2_private_key,
+    )
+    err = trader.check_client()
+    if err is not None:
+        await trader.close()
+        raise HTTPException(status_code=400, detail=f"API Key 校验失败：{err}")
+
+    request.app.state.paradex_trader = trader
+    request.app.state.paradex_trader_sig = sig
+    return trader
+
+
+async def _ensure_trader(request: Request, exchange: Optional[str] = None) -> Trader:
+    config: Dict[str, Any] = request.app.state.config.read()
+    name = _exchange_name(config, exchange)
+    if name == "paradex":
+        return await _ensure_paradex_trader(request)
+    return await _ensure_lighter_trader(request)
+
+
 async def _ensure_lighter_trader(request: Request) -> LighterTrader:
     config: Dict[str, Any] = request.app.state.config.read()
     ex = config.get("exchange", {})
     env = str(ex.get("env") or "mainnet")
-    account_index = ex.get("account_index")
-    api_key_index = ex.get("api_key_index")
+    account_index = _to_int(ex.get("account_index"))
+    api_key_index = _to_int(ex.get("api_key_index"))
     api_private_key = _get_secret(request, "api_private_key")
-    if not isinstance(account_index, int) or not isinstance(api_key_index, int) or not api_private_key:
+    if account_index is None or api_key_index is None or not api_private_key:
         raise HTTPException(status_code=400, detail="请先完整配置 account_index、api_key_index、API 私钥")
 
-    sig = (env, int(account_index), int(api_key_index))
+    sig = (env, int(account_index), int(api_key_index), _secret_fingerprint(api_private_key))
     existing: Optional[LighterTrader] = request.app.state.lighter_trader
     existing_sig = request.app.state.lighter_trader_sig
     if existing and existing_sig == sig:

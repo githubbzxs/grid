@@ -10,13 +10,22 @@ const els = {
   btnLock: document.getElementById("btn-lock"),
   appArea: document.getElementById("app-area"),
 
+  exName: document.getElementById("ex-name"),
   exEnv: document.getElementById("ex-env"),
+  lighterFields: document.getElementById("lighter-fields"),
+  paradexFields: document.getElementById("paradex-fields"),
   exL1: document.getElementById("ex-l1"),
   exAccount: document.getElementById("ex-account"),
   btnResolveAccount: document.getElementById("btn-resolve-account"),
   exKeyIndex: document.getElementById("ex-key-index"),
   exApiKey: document.getElementById("ex-api-key"),
   exEthKey: document.getElementById("ex-eth-key"),
+  pxL1: document.getElementById("px-l1"),
+  pxL1Key: document.getElementById("px-l1-key"),
+  pxL1KeyHint: document.getElementById("px-l1-key-hint"),
+  pxL2: document.getElementById("px-l2"),
+  pxL2Key: document.getElementById("px-l2-key"),
+  pxL2KeyHint: document.getElementById("px-l2-key-hint"),
   exRemember: document.getElementById("ex-remember"),
   exApiKeyHint: document.getElementById("ex-api-key-hint"),
   exEthKeyHint: document.getElementById("ex-eth-key-hint"),
@@ -73,6 +82,17 @@ const els = {
 let authState = { setup_required: true, authenticated: false, unlocked: false };
 let logSource = null;
 let lastMarkets = [];
+
+function currentExchange() {
+  const name = (els.exName && els.exName.value) || "lighter";
+  return String(name).toLowerCase() === "paradex" ? "paradex" : "lighter";
+}
+
+function applyExchangeUI() {
+  const isParadex = currentExchange() === "paradex";
+  if (els.lighterFields) els.lighterFields.hidden = isParadex;
+  if (els.paradexFields) els.paradexFields.hidden = !isParadex;
+}
 
 async function apiFetch(path, { method = "GET", body = null } = {}) {
   const resp = await fetch(path, {
@@ -193,6 +213,7 @@ async function lock() {
 
 function fillConfig(cfg) {
   const ex = cfg.exchange || {};
+  els.exName.value = ex.name || "lighter";
   els.exEnv.value = ex.env || "mainnet";
   els.exL1.value = ex.l1_address || "";
   els.exAccount.value = ex.account_index == null ? "" : String(ex.account_index);
@@ -200,6 +221,10 @@ function fillConfig(cfg) {
   els.exRemember.value = String(Boolean(ex.remember_secrets));
   els.exApiKeyHint.textContent = ex.api_private_key_set ? "已保存（加密）" : "未保存";
   els.exEthKeyHint.textContent = ex.eth_private_key_set ? "已保存（加密）" : "未保存";
+  els.pxL1.value = ex.paradex_l1_address || "";
+  els.pxL2.value = ex.paradex_l2_address || "";
+  els.pxL1KeyHint.textContent = ex.paradex_l1_private_key_set ? "已保存（加密）" : "未保存";
+  els.pxL2KeyHint.textContent = ex.paradex_l2_private_key_set ? "已保存（加密）" : "未保存";
 
   const rt = cfg.runtime || {};
   els.runtimeDryRun.value = String(Boolean(rt.dry_run));
@@ -209,6 +234,8 @@ function fillConfig(cfg) {
   fillStrategyRow("BTC", st.BTC || {}, "btc");
   fillStrategyRow("ETH", st.ETH || {}, "eth");
   fillStrategyRow("SOL", st.SOL || {}, "sol");
+
+  applyExchangeUI();
 }
 
 function fillStrategyRow(symbol, s, key) {
@@ -254,21 +281,33 @@ async function loadConfig() {
 
 async function saveConfig() {
   const exchange = {
+    name: currentExchange(),
     env: els.exEnv.value,
-    l1_address: els.exL1.value.trim(),
-    account_index: els.exAccount.value.trim() ? Math.floor(Number(els.exAccount.value.trim())) : null,
-    api_key_index: els.exKeyIndex.value.trim() ? Math.floor(Number(els.exKeyIndex.value.trim())) : null,
     remember_secrets: els.exRemember.value === "true",
   };
-  const api_private_key = els.exApiKey.value.trim();
-  const eth_private_key = els.exEthKey.value.trim();
-  if (api_private_key) exchange.api_private_key = api_private_key;
-  if (eth_private_key) exchange.eth_private_key = eth_private_key;
+  if (exchange.name === "paradex") {
+    exchange.paradex_l1_address = els.pxL1.value.trim();
+    exchange.paradex_l2_address = els.pxL2.value.trim();
+    const l1_key = els.pxL1Key.value.trim();
+    const l2_key = els.pxL2Key.value.trim();
+    if (l1_key) exchange.paradex_l1_private_key = l1_key;
+    if (l2_key) exchange.paradex_l2_private_key = l2_key;
+  } else {
+    exchange.l1_address = els.exL1.value.trim();
+    exchange.account_index = els.exAccount.value.trim() ? Math.floor(Number(els.exAccount.value.trim())) : null;
+    exchange.api_key_index = els.exKeyIndex.value.trim() ? Math.floor(Number(els.exKeyIndex.value.trim())) : null;
+    const api_private_key = els.exApiKey.value.trim();
+    const eth_private_key = els.exEthKey.value.trim();
+    if (api_private_key) exchange.api_private_key = api_private_key;
+    if (eth_private_key) exchange.eth_private_key = eth_private_key;
+  }
 
   const resp = await apiFetch("/api/config", { method: "POST", body: { exchange } });
   fillConfig(resp.config || {});
   els.exApiKey.value = "";
   els.exEthKey.value = "";
+  els.pxL1Key.value = "";
+  els.pxL2Key.value = "";
 }
 
 function numOrNull(v) {
@@ -283,18 +322,26 @@ function numOrZero(v) {
   return n == null ? 0 : n;
 }
 
+function marketIdValue(input) {
+  const raw = String(input.value || "").trim();
+  if (!raw) return null;
+  if (currentExchange() === "paradex") return raw;
+  const n = Number(raw);
+  return Number.isFinite(n) ? Math.floor(n) : null;
+}
+
 async function saveStrategies() {
   const runtime = {
     dry_run: els.runtimeDryRun.value === "true",
     loop_interval_ms: Math.floor(numOrZero(els.runtimeInterval.value)),
   };
-  const btcMarket = numOrNull(els.stBtcMarket.value);
-  const ethMarket = numOrNull(els.stEthMarket.value);
-  const solMarket = numOrNull(els.stSolMarket.value);
+  const btcMarket = marketIdValue(els.stBtcMarket);
+  const ethMarket = marketIdValue(els.stEthMarket);
+  const solMarket = marketIdValue(els.stSolMarket);
   const strategies = {
     BTC: {
       enabled: Boolean(els.stBtcEnabled.checked),
-      market_id: btcMarket == null ? null : Math.floor(btcMarket),
+      market_id: btcMarket,
       grid_step: numOrZero(els.stBtcStep.value),
       levels_up: Math.floor(numOrZero(els.stBtcUp.value)),
       levels_down: Math.floor(numOrZero(els.stBtcDown.value)),
@@ -304,7 +351,7 @@ async function saveStrategies() {
     },
     ETH: {
       enabled: Boolean(els.stEthEnabled.checked),
-      market_id: ethMarket == null ? null : Math.floor(ethMarket),
+      market_id: ethMarket,
       grid_step: numOrZero(els.stEthStep.value),
       levels_up: Math.floor(numOrZero(els.stEthUp.value)),
       levels_down: Math.floor(numOrZero(els.stEthDown.value)),
@@ -314,7 +361,7 @@ async function saveStrategies() {
     },
     SOL: {
       enabled: Boolean(els.stSolEnabled.checked),
-      market_id: solMarket == null ? null : Math.floor(solMarket),
+      market_id: solMarket,
       grid_step: numOrZero(els.stSolStep.value),
       levels_up: Math.floor(numOrZero(els.stSolUp.value)),
       levels_down: Math.floor(numOrZero(els.stSolDown.value)),
@@ -329,6 +376,9 @@ async function saveStrategies() {
 }
 
 async function resolveAccountIndex() {
+  if (currentExchange() !== "lighter") {
+    throw new Error("仅 Lighter 支持自动查询 account_index");
+  }
   const env = els.exEnv.value;
   const l1 = els.exL1.value.trim();
   if (!l1) throw new Error("请先填写 L1 地址");
@@ -338,7 +388,8 @@ async function resolveAccountIndex() {
 
 async function fetchMarkets() {
   const env = els.exEnv.value;
-  const resp = await apiFetch(`/api/lighter/markets?env=${encodeURIComponent(env)}`);
+  const exchange = currentExchange();
+  const resp = await apiFetch(`/api/exchange/markets?env=${encodeURIComponent(env)}&exchange=${encodeURIComponent(exchange)}`);
   const items = resp.items || [];
   lastMarkets = items;
   const lines = items.map(
@@ -350,7 +401,8 @@ async function fetchMarkets() {
 }
 
 async function testConnection() {
-  const resp = await apiFetch("/api/lighter/test_connection", { method: "POST" });
+  const exchange = currentExchange();
+  const resp = await apiFetch(`/api/exchange/test_connection?exchange=${encodeURIComponent(exchange)}`, { method: "POST" });
   els.testOutput.value = JSON.stringify(resp.result || {}, null, 2);
 }
 
@@ -373,14 +425,18 @@ async function autoFillMarketIds() {
 }
 
 async function refreshAccount() {
-  const resp = await apiFetch("/api/lighter/account_snapshot");
+  const exchange = currentExchange();
+  const resp = await apiFetch(`/api/exchange/account_snapshot?exchange=${encodeURIComponent(exchange)}`);
   els.accountOutput.value = JSON.stringify(resp.account || {}, null, 2);
 }
 
 async function refreshOrders() {
   const symbol = els.ordersSymbol.value;
   const mine = els.ordersMine.value;
-  const resp = await apiFetch(`/api/lighter/active_orders?symbol=${encodeURIComponent(symbol)}&mine=${encodeURIComponent(mine)}`);
+  const exchange = currentExchange();
+  const resp = await apiFetch(
+    `/api/exchange/active_orders?symbol=${encodeURIComponent(symbol)}&mine=${encodeURIComponent(mine)}&exchange=${encodeURIComponent(exchange)}`
+  );
   els.ordersOutput.value = JSON.stringify(resp || {}, null, 2);
 }
 
@@ -434,6 +490,12 @@ function escapeHtml(s) {
 }
 
 function wire() {
+  if (els.exName) {
+    els.exName.addEventListener("change", () => {
+      lastMarkets = [];
+      applyExchangeUI();
+    });
+  }
   els.btnSetup.addEventListener("click", async () => {
     try {
       await setup();
