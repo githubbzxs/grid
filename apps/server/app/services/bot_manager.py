@@ -159,6 +159,14 @@ class BotManager:
                 cfg = self._config.read()
                 runtime = cfg.get("runtime", {})
                 dry_run = bool(runtime.get("dry_run", True))
+                interval_ms = runtime.get("loop_interval_ms", 100)
+                try:
+                    interval_ms = float(interval_ms)
+                except Exception:
+                    interval_ms = 100.0
+                if interval_ms <= 0:
+                    interval_ms = 100.0
+                interval_s = max(0.01, interval_ms / 1000.0)
                 strat = (cfg.get("strategies", {}) or {}).get(symbol, {}) or {}
 
                 if not bool(strat.get("enabled", True)):

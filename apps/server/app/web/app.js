@@ -51,6 +51,7 @@ const els = {
   stSolSize: document.getElementById("st-sol-size"),
 
   runtimeDryRun: document.getElementById("runtime-dry-run"),
+  runtimeInterval: document.getElementById("runtime-interval"),
   btnSaveStrategies: document.getElementById("btn-save-strategies"),
   btnAutoMarket: document.getElementById("btn-auto-market"),
 
@@ -202,6 +203,7 @@ function fillConfig(cfg) {
 
   const rt = cfg.runtime || {};
   els.runtimeDryRun.value = String(Boolean(rt.dry_run));
+  els.runtimeInterval.value = rt.loop_interval_ms == null ? "100" : String(rt.loop_interval_ms);
 
   const st = cfg.strategies || {};
   fillStrategyRow("BTC", st.BTC || {}, "btc");
@@ -282,7 +284,10 @@ function numOrZero(v) {
 }
 
 async function saveStrategies() {
-  const runtime = { dry_run: els.runtimeDryRun.value === "true" };
+  const runtime = {
+    dry_run: els.runtimeDryRun.value === "true",
+    loop_interval_ms: Math.floor(numOrZero(els.runtimeInterval.value)),
+  };
   const btcMarket = numOrNull(els.stBtcMarket.value);
   const ethMarket = numOrNull(els.stEthMarket.value);
   const solMarket = numOrNull(els.stSolMarket.value);

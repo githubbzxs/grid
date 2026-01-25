@@ -184,6 +184,11 @@
               </select>
               <div class="hint">实盘会使用你保存的 API 私钥发起交易，请谨慎。</div>
             </div>
+            <div>
+              <label>补单间隔(ms)</label>
+              <input id="runtime-interval" type="number" min="10" step="10" placeholder="100" />
+              <div class="hint">越小越快，过低可能触发限频。</div>
+            </div>
           </div>
 
           <div class="btns">
