@@ -51,4 +51,12 @@ else
 fi
 
 cd "$TARGET_DIR"
+
+if [ -d ".venv" ]; then
+  if ! ./.venv/bin/python -m pip --version >/dev/null 2>&1; then
+    echo "检测到损坏的虚拟环境，准备重建..."
+    rm -rf .venv
+  fi
+fi
+
 bash scripts/start.sh
