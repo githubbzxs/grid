@@ -13,7 +13,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 ensure_python_deps() {
-  if python3 -c "import venv" >/dev/null 2>&1; then
+  if python3 -c "import ensurepip" >/dev/null 2>&1; then
     return 0
   fi
   if command -v apt-get >/dev/null 2>&1; then
@@ -21,7 +21,7 @@ ensure_python_deps() {
       echo "缺少 python3-venv，请以 root 或使用 sudo 运行。"
       exit 1
     fi
-    echo "安装 python3-venv 与 python3-pip..."
+    echo "ensurepip 不可用，安装 python3-venv 与 python3-pip..."
     $SUDO apt-get update
     $SUDO apt-get install -y python3-venv python3-pip
     return 0
