@@ -52,6 +52,7 @@ const els = {
 
   runtimeDryRun: document.getElementById("runtime-dry-run"),
   btnSaveStrategies: document.getElementById("btn-save-strategies"),
+  btnAutoMarket: document.getElementById("btn-auto-market"),
 
   btnStartAll: document.getElementById("btn-start-all"),
   btnStopAll: document.getElementById("btn-stop-all"),
@@ -70,6 +71,7 @@ const els = {
 
 let authState = { setup_required: true, authenticated: false, unlocked: false };
 let logSource = null;
+let lastMarkets = [];
 
 async function apiFetch(path, { method = "GET", body = null } = {}) {
   const resp = await fetch(path, {
@@ -333,16 +335,36 @@ async function fetchMarkets() {
   const env = els.exEnv.value;
   const resp = await apiFetch(`/api/lighter/markets?env=${encodeURIComponent(env)}`);
   const items = resp.items || [];
+  lastMarkets = items;
   const lines = items.map(
     (x) =>
       `${x.symbol} id=${x.market_id} sizeDec=${x.supported_size_decimals} priceDec=${x.supported_price_decimals} makerFee=${x.maker_fee} takerFee=${x.taker_fee}`
   );
   els.marketsOutput.value = lines.join("\n");
+  return items;
 }
 
 async function testConnection() {
   const resp = await apiFetch("/api/lighter/test_connection", { method: "POST" });
   els.testOutput.value = JSON.stringify(resp.result || {}, null, 2);
+}
+
+function pickMarketId(symbol, items) {
+  const upper = symbol.toUpperCase();
+  const candidates = items.filter((x) => String(x.symbol || "").toUpperCase().includes(upper));
+  if (!candidates.length) return null;
+  const prefer = candidates.find((x) => /USDC|USD/.test(String(x.symbol || "").toUpperCase()));
+  return (prefer || candidates[0]).market_id;
+}
+
+async function autoFillMarketIds() {
+  const items = lastMarkets.length ? lastMarkets : await fetchMarkets();
+  const btc = pickMarketId("BTC", items);
+  const eth = pickMarketId("ETH", items);
+  const sol = pickMarketId("SOL", items);
+  if (btc != null) els.stBtcMarket.value = String(btc);
+  if (eth != null) els.stEthMarket.value = String(eth);
+  if (sol != null) els.stSolMarket.value = String(sol);
 }
 
 async function refreshAccount() {
@@ -384,6 +406,10 @@ async function refreshBots() {
 }
 
 async function startAll() {
+  const dryRun = els.runtimeDryRun.value === "true";
+  if (!dryRun) {
+    if (!confirm("当前为实盘模式，会真实下单。确认启动吗？")) return;
+  }
   await apiFetch("/api/bots/start", { method: "POST", body: { symbols: ["BTC", "ETH", "SOL"] } });
   await refreshBots();
 }
@@ -441,6 +467,13 @@ function wire() {
   els.btnSaveStrategies.addEventListener("click", async () => {
     try {
       await saveStrategies();
+    } catch (e) {
+      alert(e.message);
+    }
+  });
+  els.btnAutoMarket.addEventListener("click", async () => {
+    try {
+      await autoFillMarketIds();
     } catch (e) {
       alert(e.message);
     }
