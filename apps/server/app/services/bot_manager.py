@@ -179,8 +179,10 @@ class BotManager:
                 existing: Dict[int, Any] = {}
                 asks: list[Decimal] = []
                 bids: list[Decimal] = []
-                ask_levels: list[int] = []
-                bid_levels: list[int] = []
+                ask_levels: set[int] = set()
+                bid_levels: set[int] = set()
+                ask_level_prices: Dict[int, Decimal] = {}
+                bid_level_prices: Dict[int, Decimal] = {}
 
                 for o in existing_orders:
                     cid = int(getattr(o, "client_order_index", 0) or 0)
@@ -198,9 +200,11 @@ class BotManager:
                     lvl = grid_client_order_side_level(cid)
                     if lvl:
                         if lvl[0] == "ask":
-                            ask_levels.append(lvl[1])
+                            ask_levels.add(lvl[1])
+                            ask_level_prices.setdefault(lvl[1], price)
                         elif lvl[0] == "bid":
-                            bid_levels.append(lvl[1])
+                            bid_levels.add(lvl[1])
+                            bid_level_prices.setdefault(lvl[1], price)
 
                 levels_up = int(strat.get("levels_up") or 0)
                 levels_down = int(strat.get("levels_down") or 0)
@@ -216,56 +220,49 @@ class BotManager:
                 bid_count = len(bids)
                 total_existing = ask_count + bid_count
 
-                missing_asks = max(0, levels_up - ask_count)
-                missing_bids = max(0, levels_down - bid_count)
+                desired_asks = set(range(1, levels_up + 1))
+                desired_bids = set(range(1, levels_down + 1))
+                missing_ask_levels = sorted(desired_asks - ask_levels)
+                missing_bid_levels = sorted(desired_bids - bid_levels)
+                missing_asks = len(missing_ask_levels)
+                missing_bids = len(missing_bid_levels)
 
                 available_slots = missing_asks + missing_bids
                 if max_open_orders > 0:
                     available_slots = max(0, max_open_orders - total_existing)
 
                 if available_slots > 0 and (missing_asks + missing_bids) > 0:
-                    highest_ask = max(asks) if asks else None
-                    lowest_bid = min(bids) if bids else None
+                    create_plan: list[tuple[str, int]] = []
+                    a_idx = 0
+                    b_idx = 0
+                    while len(create_plan) < available_slots and (a_idx < len(missing_ask_levels) or b_idx < len(missing_bid_levels)):
+                        if a_idx < len(missing_ask_levels):
+                            create_plan.append(("ask", missing_ask_levels[a_idx]))
+                            a_idx += 1
+                            if len(create_plan) >= available_slots:
+                                break
+                        if b_idx < len(missing_bid_levels):
+                            create_plan.append(("bid", missing_bid_levels[b_idx]))
+                            b_idx += 1
 
-                    ask_start = highest_ask if highest_ask is not None else center
-                    bid_start = lowest_bid if lowest_bid is not None else center
+                    ask_ref_level = min(ask_level_prices.keys(), default=0)
+                    bid_ref_level = min(bid_level_prices.keys(), default=0)
+                    ask_ref_price = ask_level_prices.get(ask_ref_level)
+                    bid_ref_price = bid_level_prices.get(bid_ref_level)
 
-                    next_ask_level = max(ask_levels or [0]) + 1
-                    next_bid_level = max(bid_levels or [0]) + 1
-
-                    create_plan: list[str] = []
-                    slots = available_slots
-                    ma = missing_asks
-                    mb = missing_bids
-                    while slots > 0 and (ma > 0 or mb > 0):
-                        if ma > 0:
-                            create_plan.append("ask")
-                            ma -= 1
-                            slots -= 1
-                        if slots <= 0:
-                            break
-                        if mb > 0:
-                            create_plan.append("bid")
-                            mb -= 1
-                            slots -= 1
-
-                    ask_seq = 0
-                    bid_seq = 0
-                    for side in create_plan:
+                    for side, level in create_plan:
+                        if level < 1 or level > MAX_LEVEL_PER_SIDE:
+                            continue
                         if side == "ask":
-                            ask_seq += 1
-                            level = next_ask_level + ask_seq - 1
-                            if level > MAX_LEVEL_PER_SIDE:
-                                self._logbus.publish(f"grid.level_overflow symbol={symbol} side=ask level={level}")
-                                continue
-                            price = ask_start + (step * ask_seq)
+                            if ask_ref_price is not None:
+                                price = ask_ref_price + (step * (level - ask_ref_level))
+                            else:
+                                price = center + (step * level)
                         else:
-                            bid_seq += 1
-                            level = next_bid_level + bid_seq - 1
-                            if level > MAX_LEVEL_PER_SIDE:
-                                self._logbus.publish(f"grid.level_overflow symbol={symbol} side=bid level={level}")
-                                continue
-                            price = bid_start - (step * bid_seq)
+                            if bid_ref_price is not None:
+                                price = bid_ref_price - (step * (level - bid_ref_level))
+                            else:
+                                price = center - (step * level)
 
                         if price <= 0:
                             continue
@@ -281,6 +278,8 @@ class BotManager:
                             continue
 
                         oid = grid_client_order_id(prefix, side, level)
+                        if oid in existing:
+                            continue
                         if oid > CLIENT_ORDER_MAX:
                             continue
                         price_int = _to_scaled_int(price_q, meta.price_decimals, ROUND_HALF_UP)
