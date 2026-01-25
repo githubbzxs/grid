@@ -71,3 +71,4 @@ WebUI 使用步骤（建议先模拟）
 
 - 从零部署并启动（拉取仓库 + 启动）：
   - `bash -c "$(curl -fsSL https://raw.githubusercontent.com/githubbzxs/grid/main/scripts/bootstrap.sh)"`
+  - 说明：在 Debian/Ubuntu 上会自动安装 python3-venv 与 python3-pip（需要 root 或 sudo）
