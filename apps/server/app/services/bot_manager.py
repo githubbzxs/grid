@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
@@ -38,6 +39,19 @@ def _safe_decimal(v: Any) -> Decimal:
         return Decimal(str(v))
     except Exception:
         return Decimal(0)
+
+
+def _safe_int(v: Any, default: int) -> int:
+    try:
+        if v is None:
+            return default
+        return int(float(v))
+    except Exception:
+        return default
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
 
 
 def _calc_base_qty(mode: str, value: Decimal, price: Decimal) -> Decimal:
@@ -154,10 +168,19 @@ class BotManager:
         self._status: Dict[str, BotStatus] = {}
         self._lock = asyncio.Lock()
         self._reduce_mode: Dict[str, bool] = {}
+        self._manual_stop: set[str] = set()
+        self._restart_tasks: Dict[str, asyncio.Task[None]] = {}
+        self._restart_times: Dict[str, list[int]] = {}
 
-    async def start(self, symbol: str, trader: Trader) -> None:
+    async def start(self, symbol: str, trader: Trader, manual: bool = True) -> None:
         symbol = symbol.upper()
         async with self._lock:
+            if manual:
+                self._manual_stop.discard(symbol)
+                self._restart_times.pop(symbol, None)
+            restart_task = self._restart_tasks.pop(symbol, None)
+            if restart_task and not restart_task.done():
+                restart_task.cancel()
             task = self._tasks.get(symbol)
             if task and not task.done():
                 return
@@ -174,6 +197,10 @@ class BotManager:
     async def stop(self, symbol: str) -> None:
         symbol = symbol.upper()
         async with self._lock:
+            self._manual_stop.add(symbol)
+            restart_task = self._restart_tasks.pop(symbol, None)
+            if restart_task and not restart_task.done():
+                restart_task.cancel()
             task = self._tasks.get(symbol)
             if not task:
                 self._status[symbol] = BotStatus(symbol=symbol, running=False, message="已停止")
@@ -185,6 +212,7 @@ class BotManager:
             pass
         async with self._lock:
             self._tasks.pop(symbol, None)
+            self._restart_times.pop(symbol, None)
             prev = self._status.get(symbol)
             self._status[symbol] = BotStatus(symbol=symbol, running=False, message="已停止", started_at=prev.started_at if prev else None)
         self._logbus.publish(f"bot.stop symbol={symbol}")
@@ -485,6 +513,69 @@ class BotManager:
         except Exception as exc:
             self._logbus.publish(f"bot.error symbol={symbol} err={type(exc).__name__}:{exc}")
             await self._update_status(symbol, running=False, message="异常退出", last_tick_at=_now_iso())
+            await self._schedule_restart(symbol, trader)
+
+    async def _schedule_restart(self, symbol: str, trader: Trader) -> None:
+        cfg = self._config.read()
+        runtime = cfg.get("runtime", {}) or {}
+        if not bool(runtime.get("auto_restart", True)):
+            return
+
+        delay_ms = _safe_int(runtime.get("restart_delay_ms"), 1000)
+        max_times = _safe_int(runtime.get("restart_max"), 5)
+        window_ms = _safe_int(runtime.get("restart_window_ms"), 60000)
+        if delay_ms < 0:
+            delay_ms = 0
+        delay_s = max(0.05, delay_ms / 1000.0)
+
+        now_ms = _now_ms()
+        limit_reached = False
+        attempts = 0
+        async with self._lock:
+            if symbol in self._manual_stop:
+                return
+            times = list(self._restart_times.get(symbol) or [])
+            if window_ms > 0:
+                times = [t for t in times if now_ms - t <= window_ms]
+            times.append(now_ms)
+            self._restart_times[symbol] = times
+            attempts = len(times)
+            if max_times > 0 and attempts > max_times:
+                limit_reached = True
+            else:
+                task = self._restart_tasks.get(symbol)
+                if task and not task.done():
+                    return
+                self._restart_tasks[symbol] = asyncio.create_task(
+                    self._restart_after_delay(symbol, trader, delay_s)
+                )
+
+        if limit_reached:
+            self._logbus.publish(f"bot.restart.limit symbol={symbol} count={attempts}")
+            await self._update_status(symbol, running=False, message="自动重连已达上限", last_tick_at=_now_iso())
+
+    async def _restart_after_delay(self, symbol: str, trader: Trader, delay_s: float) -> None:
+        try:
+            await asyncio.sleep(delay_s)
+            cfg = self._config.read()
+            runtime = cfg.get("runtime", {}) or {}
+            if not bool(runtime.get("auto_restart", True)):
+                return
+            async with self._lock:
+                if symbol in self._manual_stop:
+                    return
+                task = self._tasks.get(symbol)
+                if task and not task.done():
+                    return
+            await self.start(symbol, trader, manual=False)
+            self._logbus.publish(f"bot.restart symbol={symbol}")
+        except asyncio.CancelledError:
+            raise
+        finally:
+            async with self._lock:
+                task = self._restart_tasks.get(symbol)
+                if task is asyncio.current_task():
+                    self._restart_tasks.pop(symbol, None)
 
     async def _update_status(self, symbol: str, **patch: Any) -> None:
         async with self._lock:

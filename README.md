@@ -1,6 +1,14 @@
 Grid（无限网格交易程序）
 ====================
 
+Linux 一键更新
+------------
+
+- 更新并重启（默认目录 grid）：
+  - `bash -c "$(curl -fsSL https://raw.githubusercontent.com/githubbzxs/grid/main/scripts/update.sh)"`
+  - 可通过 `GRID_DIR` 指定仓库目录，例如：`GRID_DIR=/opt/grid bash -c "$(curl -fsSL https://raw.githubusercontent.com/githubbzxs/grid/main/scripts/update.sh)"`
+
+
 当前状态
 -------
 

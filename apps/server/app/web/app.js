@@ -71,6 +71,10 @@ const els = {
   runtimeDryRun: document.getElementById("runtime-dry-run"),
   runtimeInterval: document.getElementById("runtime-interval"),
   runtimeStatusInterval: document.getElementById("runtime-status-interval"),
+  runtimeAutoRestart: document.getElementById("runtime-auto-restart"),
+  runtimeRestartDelay: document.getElementById("runtime-restart-delay"),
+  runtimeRestartMax: document.getElementById("runtime-restart-max"),
+  runtimeRestartWindow: document.getElementById("runtime-restart-window"),
   btnSaveStrategies: document.getElementById("btn-save-strategies"),
   btnAutoMarket: document.getElementById("btn-auto-market"),
 
@@ -274,6 +278,19 @@ function fillConfig(cfg) {
   if (els.runtimeStatusInterval) {
     els.runtimeStatusInterval.value = rt.status_refresh_ms == null ? "1000" : String(rt.status_refresh_ms);
   }
+  if (els.runtimeAutoRestart) {
+    const autoRestart = rt.auto_restart == null ? true : Boolean(rt.auto_restart);
+    els.runtimeAutoRestart.value = String(autoRestart);
+  }
+  if (els.runtimeRestartDelay) {
+    els.runtimeRestartDelay.value = rt.restart_delay_ms == null ? "1000" : String(rt.restart_delay_ms);
+  }
+  if (els.runtimeRestartMax) {
+    els.runtimeRestartMax.value = rt.restart_max == null ? "5" : String(rt.restart_max);
+  }
+  if (els.runtimeRestartWindow) {
+    els.runtimeRestartWindow.value = rt.restart_window_ms == null ? "60000" : String(rt.restart_window_ms);
+  }
 
   const st = cfg.strategies || {};
   fillStrategyRow("BTC", st.BTC || {}, "btc");
@@ -392,6 +409,10 @@ async function saveStrategies() {
     dry_run: els.runtimeDryRun.value === "true",
     loop_interval_ms: Math.floor(numOrZero(els.runtimeInterval.value)),
     status_refresh_ms: Math.floor(numOrZero(els.runtimeStatusInterval ? els.runtimeStatusInterval.value : 0)) || 1000,
+    auto_restart: els.runtimeAutoRestart ? els.runtimeAutoRestart.value === "true" : true,
+    restart_delay_ms: Math.floor(numOrZero(els.runtimeRestartDelay ? els.runtimeRestartDelay.value : 0)),
+    restart_max: Math.floor(numOrZero(els.runtimeRestartMax ? els.runtimeRestartMax.value : 0)),
+    restart_window_ms: Math.floor(numOrZero(els.runtimeRestartWindow ? els.runtimeRestartWindow.value : 0)),
   };
   const btcMarket = marketIdValue(els.stBtcMarket);
   const ethMarket = marketIdValue(els.stEthMarket);

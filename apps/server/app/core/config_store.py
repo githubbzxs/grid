@@ -30,6 +30,10 @@ def default_config() -> dict[str, Any]:
             "dry_run": True,
             "loop_interval_ms": 100,
             "status_refresh_ms": 1000,
+            "auto_restart": True,
+            "restart_delay_ms": 1000,
+            "restart_max": 5,
+            "restart_window_ms": 60000,
         },
         "server": {
             "host": "0.0.0.0",

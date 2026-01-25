@@ -243,6 +243,35 @@
             </div>
           </div>
 
+          <div class="row" style="margin-top: 10px">
+            <div>
+              <label>自动重连</label>
+              <select id="runtime-auto-restart">
+                <option value="true">开启</option>
+                <option value="false">关闭</option>
+              </select>
+              <div class="hint">策略异常退出后自动恢复</div>
+            </div>
+            <div>
+              <label>重连间隔(ms)</label>
+              <input id="runtime-restart-delay" type="number" min="50" step="50" placeholder="1000" />
+              <div class="hint">建议≥50ms，过低可能频繁重启</div>
+            </div>
+          </div>
+
+          <div class="row">
+            <div>
+              <label>重连次数上限</label>
+              <input id="runtime-restart-max" type="number" min="0" step="1" placeholder="5" />
+              <div class="hint">0 表示不限制</div>
+            </div>
+            <div>
+              <label>重连统计窗口(ms)</label>
+              <input id="runtime-restart-window" type="number" min="0" step="1000" placeholder="60000" />
+              <div class="hint">窗口内超过上限将停止自动重连</div>
+            </div>
+          </div>
+
           <div class="btns">
             <button class="primary" id="btn-save-strategies">保存策略</button>
             <button id="btn-auto-market">自动填充 market_id</button>
