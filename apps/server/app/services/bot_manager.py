@@ -152,7 +152,7 @@ class BotManager:
         return {k: v.to_dict() for k, v in self._status.items()}
 
     async def _run(self, symbol: str, trader: LighterTrader) -> None:
-        interval_s = 0.5
+        interval_s = 0.1
         try:
             while True:
                 await asyncio.sleep(interval_s)
