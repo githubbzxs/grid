@@ -75,6 +75,8 @@ const els = {
   runtimeRestartDelay: document.getElementById("runtime-restart-delay"),
   runtimeRestartMax: document.getElementById("runtime-restart-max"),
   runtimeRestartWindow: document.getElementById("runtime-restart-window"),
+  runtimeStopMinutes: document.getElementById("runtime-stop-minutes"),
+  runtimeStopVolume: document.getElementById("runtime-stop-volume"),
   btnSaveStrategies: document.getElementById("btn-save-strategies"),
   btnAutoMarket: document.getElementById("btn-auto-market"),
 
@@ -291,6 +293,12 @@ function fillConfig(cfg) {
   if (els.runtimeRestartWindow) {
     els.runtimeRestartWindow.value = rt.restart_window_ms == null ? "60000" : String(rt.restart_window_ms);
   }
+  if (els.runtimeStopMinutes) {
+    els.runtimeStopMinutes.value = rt.stop_after_minutes == null ? "0" : String(rt.stop_after_minutes);
+  }
+  if (els.runtimeStopVolume) {
+    els.runtimeStopVolume.value = rt.stop_after_volume == null ? "0" : String(rt.stop_after_volume);
+  }
 
   const st = cfg.strategies || {};
   fillStrategyRow("BTC", st.BTC || {}, "btc");
@@ -413,6 +421,8 @@ async function saveStrategies() {
     restart_delay_ms: Math.floor(numOrZero(els.runtimeRestartDelay ? els.runtimeRestartDelay.value : 0)),
     restart_max: Math.floor(numOrZero(els.runtimeRestartMax ? els.runtimeRestartMax.value : 0)),
     restart_window_ms: Math.floor(numOrZero(els.runtimeRestartWindow ? els.runtimeRestartWindow.value : 0)),
+    stop_after_minutes: numOrZero(els.runtimeStopMinutes ? els.runtimeStopMinutes.value : 0),
+    stop_after_volume: numOrZero(els.runtimeStopVolume ? els.runtimeStopVolume.value : 0),
   };
   const btcMarket = marketIdValue(els.stBtcMarket);
   const ethMarket = marketIdValue(els.stEthMarket);

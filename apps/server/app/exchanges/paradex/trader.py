@@ -170,5 +170,36 @@ class ParadexTrader:
         )
         self._api.submit_order(order)
 
+    async def create_market_order(
+        self,
+        market_id: str | int,
+        base_amount: int,
+        is_ask: bool,
+        reduce_only: bool = False,
+    ) -> None:
+        from paradex_py.common.order import Order, OrderSide, OrderType
+
+        meta = await self.market_meta(market_id)
+        size_dec = Decimal(int(base_amount)) / (Decimal(10) ** int(meta.size_decimals))
+        side = OrderSide.Sell if is_ask else OrderSide.Buy
+        order_type = getattr(OrderType, "Market", None) or getattr(OrderType, "MARKET", None)
+        if order_type is None:
+            raise RuntimeError("未找到市价单类型")
+
+        order_kwargs = {
+            "market": str(market_id),
+            "order_type": order_type,
+            "order_side": side,
+            "size": size_dec,
+            "client_id": str(int(time.time() * 1000)),
+            "reduce_only": reduce_only,
+        }
+        try:
+            order = Order(**order_kwargs)
+        except TypeError:
+            order_kwargs["instruction"] = "IOC"
+            order = Order(**order_kwargs)
+        self._api.submit_order(order)
+
     async def cancel_order(self, market_id: str | int, order_index: Any) -> None:
         self._api.cancel_order(str(order_index))

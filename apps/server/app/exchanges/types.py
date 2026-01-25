@@ -42,4 +42,12 @@ class Trader(Protocol):
         reduce_only: bool = False,
     ) -> None: ...
 
+    async def create_market_order(
+        self,
+        market_id: str | int,
+        base_amount: int,
+        is_ask: bool,
+        reduce_only: bool = False,
+    ) -> None: ...
+
     async def cancel_order(self, market_id: str | int, order_index: Any) -> None: ...

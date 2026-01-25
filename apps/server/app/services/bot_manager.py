@@ -9,6 +9,8 @@ from typing import Any, Dict, Optional
 
 from app.core.config_store import ConfigStore
 from app.core.logbus import LogBus
+from app.exchanges.lighter.trader import LighterTrader
+from app.exchanges.paradex.trader import ParadexTrader
 from app.exchanges.types import MarketMeta, Trader
 from app.strategies.grid.ids import (
     CLIENT_ORDER_MAX,
@@ -52,6 +54,28 @@ def _safe_int(v: Any, default: int) -> int:
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _parse_iso_ms(value: Optional[str]) -> Optional[int]:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1000)
+    except Exception:
+        return None
+
+
+def _trade_ts_ms(value: Any) -> Optional[int]:
+    try:
+        ts = int(value)
+    except Exception:
+        return None
+    if ts < 10_000_000_000:
+        return ts * 1000
+    return ts
 
 
 def _calc_base_qty(mode: str, value: Decimal, price: Decimal) -> Decimal:
@@ -143,6 +167,8 @@ class BotStatus:
     desired: int = 0
     existing: int = 0
     reduce_mode: bool = False
+    stop_signal: bool = False
+    stop_reason: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -157,6 +183,8 @@ class BotStatus:
             "desired": self.desired,
             "existing": self.existing,
             "reduce_mode": self.reduce_mode,
+            "stop_signal": self.stop_signal,
+            "stop_reason": self.stop_reason,
         }
 
 
@@ -171,6 +199,11 @@ class BotManager:
         self._manual_stop: set[str] = set()
         self._restart_tasks: Dict[str, asyncio.Task[None]] = {}
         self._restart_times: Dict[str, list[int]] = {}
+        self._start_ms: Dict[str, int] = {}
+        self._stop_signal: Dict[str, bool] = {}
+        self._stop_reason: Dict[str, str] = {}
+        self._stop_check_at: Dict[str, int] = {}
+        self._pnl_cache: Dict[str, tuple[int, Decimal]] = {}
 
     async def start(self, symbol: str, trader: Trader, manual: bool = True) -> None:
         symbol = symbol.upper()
@@ -178,6 +211,13 @@ class BotManager:
             if manual:
                 self._manual_stop.discard(symbol)
                 self._restart_times.pop(symbol, None)
+                self._stop_signal.pop(symbol, None)
+                self._stop_reason.pop(symbol, None)
+                self._stop_check_at.pop(symbol, None)
+                self._pnl_cache.pop(symbol, None)
+                self._start_ms[symbol] = _now_ms()
+            elif symbol not in self._start_ms:
+                self._start_ms[symbol] = _now_ms()
             restart_task = self._restart_tasks.pop(symbol, None)
             if restart_task and not restart_task.done():
                 restart_task.cancel()
@@ -198,6 +238,11 @@ class BotManager:
         symbol = symbol.upper()
         async with self._lock:
             self._manual_stop.add(symbol)
+            self._stop_signal.pop(symbol, None)
+            self._stop_reason.pop(symbol, None)
+            self._stop_check_at.pop(symbol, None)
+            self._pnl_cache.pop(symbol, None)
+            self._start_ms.pop(symbol, None)
             restart_task = self._restart_tasks.pop(symbol, None)
             if restart_task and not restart_task.done():
                 restart_task.cancel()
@@ -231,7 +276,7 @@ class BotManager:
             while True:
                 await asyncio.sleep(interval_s)
                 cfg = self._config.read()
-                runtime = cfg.get("runtime", {})
+                runtime = cfg.get("runtime", {}) or {}
                 dry_run = bool(runtime.get("dry_run", True))
                 interval_ms = runtime.get("loop_interval_ms", 100)
                 try:
@@ -241,6 +286,9 @@ class BotManager:
                 if interval_ms <= 0:
                     interval_ms = 100.0
                 interval_s = max(0.01, interval_ms / 1000.0)
+                stop_after_minutes = _safe_decimal(runtime.get("stop_after_minutes") or 0)
+                stop_after_volume = _safe_decimal(runtime.get("stop_after_volume") or 0)
+                stop_check_interval_ms = _safe_int(runtime.get("stop_check_interval_ms"), 1000)
                 strat = (cfg.get("strategies", {}) or {}).get(symbol, {}) or {}
 
                 if not bool(strat.get("enabled", True)):
@@ -271,35 +319,119 @@ class BotManager:
                 center = (mid / step).to_integral_value(rounding=ROUND_HALF_UP) * step
                 center = _quantize(center, meta.price_decimals, ROUND_HALF_UP)
 
+                now_ms = _now_ms()
+                start_ms = self._start_ms.get(symbol)
+                if start_ms is None:
+                    status = self._status.get(symbol)
+                    start_ms = _parse_iso_ms(status.started_at if status else None) or now_ms
+                    self._start_ms[symbol] = start_ms
+
+                stop_signal = bool(self._stop_signal.get(symbol, False))
+                stop_reason = self._stop_reason.get(symbol, "")
+
                 reduce_mode = self._reduce_mode.get(symbol, False)
                 reduce_side: Optional[str] = None
                 pos_notional: Optional[Decimal] = None
+                pos_base: Optional[Decimal] = None
                 max_pos = _safe_decimal(strat.get("max_position_notional") or 0)
                 reduce_exit = _safe_decimal(strat.get("reduce_position_notional") or 0)
                 reduce_mult = _safe_decimal(strat.get("reduce_order_size_multiplier") or 1)
                 if reduce_mult < 1:
                     reduce_mult = Decimal(1)
 
-                if max_pos > 0:
-                    if reduce_exit <= 0 or reduce_exit >= max_pos:
-                        reduce_exit = max_pos * Decimal("0.8")
+                need_position = max_pos > 0 or stop_signal or stop_after_minutes > 0 or stop_after_volume > 0
+                if need_position:
                     try:
                         pos_base = await trader.position_base(market_id)
-                        pos_notional = abs(pos_base * mid)
-                        if not reduce_mode and pos_notional >= max_pos:
-                            reduce_mode = True
-                        if reduce_mode and pos_notional <= reduce_exit:
-                            reduce_mode = False
-                        self._reduce_mode[symbol] = reduce_mode
-                        if reduce_mode:
-                            if pos_base > 0:
-                                reduce_side = "ask"
-                            elif pos_base < 0:
-                                reduce_side = "bid"
+                        if mid > 0:
+                            pos_notional = abs(pos_base * mid)
                     except Exception as exc:
                         self._logbus.publish(
                             f"position.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}"
                         )
+
+                if max_pos > 0 and pos_notional is not None:
+                    if reduce_exit <= 0 or reduce_exit >= max_pos:
+                        reduce_exit = max_pos * Decimal("0.8")
+                    if not reduce_mode and pos_notional >= max_pos:
+                        reduce_mode = True
+                    if reduce_mode and pos_notional <= reduce_exit:
+                        reduce_mode = False
+                    self._reduce_mode[symbol] = reduce_mode
+                    if reduce_mode and pos_base is not None:
+                        if pos_base > 0:
+                            reduce_side = "ask"
+                        elif pos_base < 0:
+                            reduce_side = "bid"
+
+                if not stop_signal and (stop_after_minutes > 0 or stop_after_volume > 0):
+                    interval_ms = max(200, stop_check_interval_ms)
+                    last_check = self._stop_check_at.get(symbol, 0)
+                    if (now_ms - last_check) >= interval_ms:
+                        reason_parts: list[str] = []
+                        if stop_after_minutes > 0:
+                            limit_ms = int(stop_after_minutes * Decimal(60_000))
+                            if (now_ms - start_ms) >= limit_ms:
+                                reason_parts.append("运行时间达到")
+                        if stop_after_volume > 0:
+                            try:
+                                volume = await self._trade_volume_since(trader, market_id, start_ms, now_ms)
+                                if volume >= stop_after_volume:
+                                    reason_parts.append("成交量达到")
+                            except Exception as exc:
+                                self._logbus.publish(
+                                    f"stop.volume.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}"
+                                )
+                        if reason_parts:
+                            stop_signal = True
+                            stop_reason = "且".join(reason_parts)
+                            self._stop_signal[symbol] = True
+                            self._stop_reason[symbol] = stop_reason
+                            self._logbus.publish(f"bot.stop_signal symbol={symbol} reason={stop_reason}")
+                        self._stop_check_at[symbol] = now_ms
+
+                if stop_signal and pos_base is not None:
+                    clear_step = Decimal(1) / (Decimal(10) ** int(meta.size_decimals))
+                    clear_threshold = max(meta.min_base_amount, clear_step)
+                    if abs(pos_base) <= clear_threshold:
+                        await self._cancel_grid_orders(symbol, trader, market_id)
+                        await self._update_status(
+                            symbol,
+                            running=False,
+                            message="停止信号已触发，仓位已清空",
+                            last_tick_at=_now_iso(),
+                            market_id=market_id,
+                            mid=str(mid),
+                            center=str(center),
+                            desired=0,
+                            existing=0,
+                            reduce_mode=reduce_mode,
+                            stop_signal=True,
+                            stop_reason=stop_reason,
+                        )
+                        self._logbus.publish(f"bot.stop.final symbol={symbol} reason=position_clear")
+                        return
+
+                    pnl = await self._position_pnl(trader, market_id, symbol)
+                    if pnl is not None and pnl >= 0:
+                        await self._cancel_grid_orders(symbol, trader, market_id)
+                        await self._market_close_position(symbol, trader, market_id, pos_base, meta)
+                        await self._update_status(
+                            symbol,
+                            running=False,
+                            message="停止信号已触发，盈亏>=0 市价全平",
+                            last_tick_at=_now_iso(),
+                            market_id=market_id,
+                            mid=str(mid),
+                            center=str(center),
+                            desired=0,
+                            existing=0,
+                            reduce_mode=reduce_mode,
+                            stop_signal=True,
+                            stop_reason=stop_reason,
+                        )
+                        self._logbus.publish(f"bot.stop.final symbol={symbol} reason=market_close")
+                        return
 
                 prefix = grid_prefix(trader.account_key, market_id, symbol)
                 existing_orders = await trader.active_orders(market_id)
@@ -496,6 +628,11 @@ class BotManager:
                     if pos_notional is not None:
                         suffix = f"{suffix} 仓位={pos_notional:.4f}"
                     msg = f"{msg} | {suffix}"
+                if stop_signal:
+                    stop_tip = "停止信号"
+                    if stop_reason:
+                        stop_tip = f"停止信号:{stop_reason}"
+                    msg = f"{msg} | {stop_tip}"
                 await self._update_status(
                     symbol,
                     running=True,
@@ -507,6 +644,8 @@ class BotManager:
                     desired=(len(desired_asks) + len(desired_bids)),
                     existing=len(existing),
                     reduce_mode=reduce_mode,
+                    stop_signal=stop_signal,
+                    stop_reason=stop_reason,
                 )
         except asyncio.CancelledError:
             raise
@@ -514,6 +653,199 @@ class BotManager:
             self._logbus.publish(f"bot.error symbol={symbol} err={type(exc).__name__}:{exc}")
             await self._update_status(symbol, running=False, message="异常退出", last_tick_at=_now_iso())
             await self._schedule_restart(symbol, trader)
+
+    async def _trade_volume_since(self, trader: Trader, market_id: str | int, start_ms: int, end_ms: int) -> Decimal:
+        if isinstance(trader, LighterTrader):
+            try:
+                return await self._lighter_trades_since(trader, int(market_id), start_ms)
+            except Exception:
+                raise
+        if isinstance(trader, ParadexTrader):
+            return self._paradex_fills_since(trader, str(market_id), start_ms, end_ms)
+        return Decimal(0)
+
+    async def _lighter_trades_since(
+        self,
+        trader: LighterTrader,
+        market_id: int,
+        start_ms: int,
+        max_pages: int = 5,
+    ) -> Decimal:
+        total = Decimal(0)
+        cursor = None
+        pages = 0
+        reached_old = False
+        while pages < max_pages and not reached_old:
+            resp = await trader._order_api.trades(
+                sort_by="timestamp",
+                limit=200,
+                market_id=int(market_id),
+                account_index=int(trader.account_index),
+                sort_dir="desc",
+                cursor=cursor,
+            )
+            trades = getattr(resp, "trades", None)
+            if trades is None and isinstance(resp, dict):
+                trades = resp.get("trades")
+            trades = trades or []
+            for t in trades:
+                ts = _trade_ts_ms(_order_field(t, "timestamp"))
+                if ts is not None and ts < start_ms:
+                    reached_old = True
+                    break
+                usd_amount = _safe_decimal(_order_field(t, "usd_amount") or 0)
+                if usd_amount == 0:
+                    price = _safe_decimal(_order_field(t, "price") or 0)
+                    size = _safe_decimal(_order_field(t, "size") or 0)
+                    usd_amount = price * size
+                total += abs(usd_amount)
+            cursor = getattr(resp, "next_cursor", None) if not isinstance(resp, dict) else resp.get("next_cursor")
+            if not cursor:
+                break
+            pages += 1
+        return total
+
+    def _paradex_fills_since(
+        self,
+        trader: ParadexTrader,
+        market: str,
+        start_ms: int,
+        end_ms: int,
+        max_pages: int = 5,
+    ) -> Decimal:
+        total = Decimal(0)
+        cursor = None
+        pages = 0
+        while pages < max_pages:
+            params: Dict[str, Any] = {"market": market, "start_at": int(start_ms), "end_at": int(end_ms), "page_size": 200}
+            if cursor:
+                params["cursor"] = cursor
+            data = trader._api.fetch_fills(params)
+            results = list(data.get("results") or [])
+            for item in results:
+                if not isinstance(item, dict):
+                    continue
+                price = _safe_decimal(item.get("price") or 0)
+                size = _safe_decimal(item.get("size") or 0)
+                total += abs(price * size)
+            cursor = data.get("next") or data.get("next_cursor")
+            if not cursor:
+                break
+            pages += 1
+        return total
+
+    async def _position_pnl(self, trader: Trader, market_id: str | int, symbol: str) -> Optional[Decimal]:
+        now_ms = _now_ms()
+        cached = self._pnl_cache.get(symbol)
+        if cached and (now_ms - cached[0]) <= 2000:
+            return cached[1]
+
+        pnl: Optional[Decimal] = None
+        if isinstance(trader, LighterTrader):
+            resp = await trader._account_api.account(by="index", value=str(int(trader.account_index)))
+            if hasattr(resp, "model_dump"):
+                data = resp.model_dump()
+            elif hasattr(resp, "to_dict"):
+                data = resp.to_dict()
+            else:
+                data = getattr(resp, "__dict__", {})
+
+            positions = []
+            if isinstance(data, dict):
+                accounts = data.get("accounts")
+                if isinstance(accounts, list) and accounts:
+                    first = accounts[0] or {}
+                    if isinstance(first, dict):
+                        positions = first.get("positions") or []
+                elif isinstance(data.get("positions"), list):
+                    positions = data.get("positions") or []
+
+            target_id = int(market_id)
+            for pos in positions or []:
+                if not isinstance(pos, dict):
+                    continue
+                mid = pos.get("market_id")
+                try:
+                    mid = int(mid)
+                except Exception:
+                    continue
+                if mid != target_id:
+                    continue
+                pnl = _safe_decimal(pos.get("realized_pnl") or 0) + _safe_decimal(pos.get("unrealized_pnl") or 0)
+                break
+        elif isinstance(trader, ParadexTrader):
+            data = trader._api.fetch_positions()
+            results = list(data.get("results") or [])
+            target = str(market_id)
+            for item in results:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("market") or "") != target:
+                    continue
+                pnl = _safe_decimal(item.get("realized_positional_pnl") or 0) + _safe_decimal(item.get("unrealized_pnl") or 0)
+                break
+
+        if pnl is not None:
+            self._pnl_cache[symbol] = (now_ms, pnl)
+        return pnl
+
+    async def _market_close_position(
+        self,
+        symbol: str,
+        trader: Trader,
+        market_id: str | int,
+        pos_base: Decimal,
+        meta: MarketMeta,
+    ) -> None:
+        if pos_base == 0:
+            return
+        side = "ask" if pos_base > 0 else "bid"
+        base_qty = abs(pos_base)
+        base_int = _to_scaled_int(base_qty, meta.size_decimals, ROUND_HALF_UP)
+        if base_int <= 0:
+            return
+        try:
+            await trader.create_market_order(
+                market_id=market_id,
+                base_amount=int(base_int),
+                is_ask=(side == "ask"),
+                reduce_only=True,
+            )
+            self._logbus.publish(f"order.market_close symbol={symbol} market_id={market_id} side={side} size={base_int}")
+        except Exception as exc:
+            self._logbus.publish(
+                f"order.market_close.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}"
+            )
+
+    async def _cancel_grid_orders(self, symbol: str, trader: Trader, market_id: str | int) -> None:
+        prefix = grid_prefix(trader.account_key, market_id, symbol)
+        try:
+            orders = await trader.active_orders(market_id)
+        except Exception as exc:
+            self._logbus.publish(f"stop.cancel.list.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}")
+            return
+
+        canceled = 0
+        for o in orders:
+            cid = _order_client_id(o)
+            if cid is None or cid <= 0:
+                continue
+            if not is_grid_client_order(prefix, cid):
+                continue
+            oid = _order_id(o)
+            if oid is None:
+                continue
+            if isinstance(oid, int) and oid <= 0:
+                continue
+            try:
+                await trader.cancel_order(market_id, oid)
+                canceled += 1
+            except Exception as exc:
+                self._logbus.publish(
+                    f"stop.cancel.error symbol={symbol} market_id={market_id} id={cid} err={type(exc).__name__}:{exc}"
+                )
+        if canceled:
+            self._logbus.publish(f"stop.cancel.done symbol={symbol} market_id={market_id} canceled={canceled}")
 
     async def _schedule_restart(self, symbol: str, trader: Trader) -> None:
         cfg = self._config.read()

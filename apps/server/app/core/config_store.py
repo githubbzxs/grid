@@ -34,6 +34,9 @@ def default_config() -> dict[str, Any]:
             "restart_delay_ms": 1000,
             "restart_max": 5,
             "restart_window_ms": 60000,
+            "stop_after_minutes": 0.0,
+            "stop_after_volume": 0.0,
+            "stop_check_interval_ms": 1000,
         },
         "server": {
             "host": "0.0.0.0",

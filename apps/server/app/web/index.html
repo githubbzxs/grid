@@ -272,6 +272,19 @@
             </div>
           </div>
 
+          <div class="row">
+            <div>
+              <label>停止条件-运行时长(分钟)</label>
+              <input id="runtime-stop-minutes" type="number" min="0" step="1" placeholder="0" />
+              <div class="hint">0 表示不限制</div>
+            </div>
+            <div>
+              <label>停止条件-成交量(USDC)</label>
+              <input id="runtime-stop-volume" type="number" min="0" step="1" placeholder="0" />
+              <div class="hint">达到后触发停止信号</div>
+            </div>
+          </div>
+
           <div class="btns">
             <button class="primary" id="btn-save-strategies">保存策略</button>
             <button id="btn-auto-market">自动填充 market_id</button>

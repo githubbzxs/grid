@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.exchanges.lighter.public_api import base_url
@@ -183,6 +183,40 @@ class LighterTrader:
                 is_ask=bool(is_ask),
                 order_type=self._signer.ORDER_TYPE_LIMIT,
                 time_in_force=tif,
+                reduce_only=bool(reduce_only),
+            )
+        if err is not None:
+            raise RuntimeError(err)
+        if getattr(resp, "code", 0) not in (0, 200):
+            raise RuntimeError(f"send_tx code={getattr(resp, 'code', None)} msg={getattr(resp, 'message', None)}")
+
+    async def create_market_order(
+        self,
+        market_id: int,
+        base_amount: int,
+        is_ask: bool,
+        reduce_only: bool = False,
+    ) -> None:
+        meta = await self.market_meta(market_id)
+        bid, ask = await self.best_bid_ask(market_id)
+        if bid is None and ask is None:
+            raise RuntimeError("无法获取盘口")
+        if bid is None:
+            avg_price = ask
+        elif ask is None:
+            avg_price = bid
+        else:
+            avg_price = (bid + ask) / 2
+        q = Decimal(1) / (Decimal(10) ** int(meta.price_decimals))
+        price_q = Decimal(str(avg_price)).quantize(q, rounding=ROUND_HALF_UP)
+        price_int = int(price_q * (Decimal(10) ** int(meta.price_decimals)))
+        async with self._nonce_lock:
+            _, resp, err = await self._signer.create_market_order(
+                market_index=int(market_id),
+                client_order_index=0,
+                base_amount=int(base_amount),
+                avg_execution_price=int(price_int),
+                is_ask=bool(is_ask),
                 reduce_only=bool(reduce_only),
             )
         if err is not None:
