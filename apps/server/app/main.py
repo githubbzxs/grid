@@ -16,6 +16,7 @@ from app.core.logbus import LogBus
 from app.core.security import decrypt_str, derive_fernet, encrypt_str, new_salt_b64, password_hash_b64, verify_password
 from app.exchanges.lighter.public_api import LighterPublicClient
 from app.exchanges.lighter.sdk_ops import fetch_perp_markets, test_connection as lighter_test_connection
+from app.exchanges.lighter.trader import LighterTrader
 from app.services.bot_manager import BotManager
 
 
@@ -78,11 +79,20 @@ async def _startup() -> None:
     config_path = data_dir / "config.json"
     app.state.config = ConfigStore(path=config_path)
     app.state.logbus = LogBus()
-    app.state.bot_manager = BotManager(app.state.logbus)
+    app.state.bot_manager = BotManager(app.state.logbus, app.state.config)
     app.state.sessions = {}
     app.state.fernet = None
     app.state.runtime_secrets = {}
+    app.state.lighter_trader = None
+    app.state.lighter_trader_sig = None
     app.state.logbus.publish("server.start")
+
+
+@app.on_event("shutdown")
+async def _shutdown() -> None:
+    trader: Optional[LighterTrader] = getattr(app.state, "lighter_trader", None)
+    if trader:
+        await trader.close()
 
 
 @app.get("/")
@@ -225,9 +235,10 @@ async def bots_status(request: Request, _: str = Depends(require_auth)) -> Dict[
 
 
 @app.post("/api/bots/start")
-async def bots_start(body: BotSymbolsBody, request: Request, _: str = Depends(require_auth)) -> Dict[str, Any]:
+async def bots_start(body: BotSymbolsBody, request: Request, _: str = Depends(require_unlocked)) -> Dict[str, Any]:
+    trader = await _ensure_lighter_trader(request)
     for symbol in body.symbols:
-        await request.app.state.bot_manager.start(symbol.upper())
+        await request.app.state.bot_manager.start(symbol.upper(), trader)
     return {"ok": True, "bots": request.app.state.bot_manager.snapshot()}
 
 
@@ -323,3 +334,33 @@ def _get_secret(request: Request, name: str) -> Optional[str]:
         return decrypt_str(fernet, token)
     except Exception:
         return None
+
+
+async def _ensure_lighter_trader(request: Request) -> LighterTrader:
+    config: Dict[str, Any] = request.app.state.config.read()
+    ex = config.get("exchange", {})
+    env = str(ex.get("env") or "mainnet")
+    account_index = ex.get("account_index")
+    api_key_index = ex.get("api_key_index")
+    api_private_key = _get_secret(request, "api_private_key")
+    if not isinstance(account_index, int) or not isinstance(api_key_index, int) or not api_private_key:
+        raise HTTPException(status_code=400, detail="请先完整配置 account_index、api_key_index、API 私钥")
+
+    sig = (env, int(account_index), int(api_key_index))
+    existing: Optional[LighterTrader] = request.app.state.lighter_trader
+    existing_sig = request.app.state.lighter_trader_sig
+    if existing and existing_sig == sig:
+        return existing
+
+    if existing:
+        await existing.close()
+
+    trader = LighterTrader(env=env, account_index=int(account_index), api_key_index=int(api_key_index), api_private_key=api_private_key)
+    err = trader.check_client()
+    if err is not None:
+        await trader.close()
+        raise HTTPException(status_code=400, detail=f"API Key 校验失败：{err}")
+
+    request.app.state.lighter_trader = trader
+    request.app.state.lighter_trader_sig = sig
+    return trader

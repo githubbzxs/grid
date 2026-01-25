@@ -26,6 +26,9 @@ def default_config() -> dict[str, Any]:
             "password_hash_b64": "",
             "kdf_salt_b64": "",
         },
+        "runtime": {
+            "dry_run": True,
+        },
         "server": {
             "host": "127.0.0.1",
             "port": 8000,
@@ -42,6 +45,7 @@ def default_config() -> dict[str, Any]:
         "strategies": {
             "BTC": {
                 "enabled": True,
+                "market_id": None,
                 "grid_step": 0.0,
                 "levels_up": 10,
                 "levels_down": 10,
@@ -53,6 +57,7 @@ def default_config() -> dict[str, Any]:
             },
             "ETH": {
                 "enabled": True,
+                "market_id": None,
                 "grid_step": 0.0,
                 "levels_up": 10,
                 "levels_down": 10,
@@ -64,6 +69,7 @@ def default_config() -> dict[str, Any]:
             },
             "SOL": {
                 "enabled": True,
+                "market_id": None,
                 "grid_step": 0.0,
                 "levels_up": 10,
                 "levels_down": 10,
@@ -117,4 +123,3 @@ def _deep_merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
         else:
             merged[key] = value
     return merged
-

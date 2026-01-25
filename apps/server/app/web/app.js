@@ -26,6 +26,33 @@ const els = {
   marketsOutput: document.getElementById("markets-output"),
   testOutput: document.getElementById("test-output"),
 
+  stBtcEnabled: document.getElementById("st-btc-enabled"),
+  stBtcMarket: document.getElementById("st-btc-market"),
+  stBtcStep: document.getElementById("st-btc-step"),
+  stBtcUp: document.getElementById("st-btc-up"),
+  stBtcDown: document.getElementById("st-btc-down"),
+  stBtcMode: document.getElementById("st-btc-mode"),
+  stBtcSize: document.getElementById("st-btc-size"),
+
+  stEthEnabled: document.getElementById("st-eth-enabled"),
+  stEthMarket: document.getElementById("st-eth-market"),
+  stEthStep: document.getElementById("st-eth-step"),
+  stEthUp: document.getElementById("st-eth-up"),
+  stEthDown: document.getElementById("st-eth-down"),
+  stEthMode: document.getElementById("st-eth-mode"),
+  stEthSize: document.getElementById("st-eth-size"),
+
+  stSolEnabled: document.getElementById("st-sol-enabled"),
+  stSolMarket: document.getElementById("st-sol-market"),
+  stSolStep: document.getElementById("st-sol-step"),
+  stSolUp: document.getElementById("st-sol-up"),
+  stSolDown: document.getElementById("st-sol-down"),
+  stSolMode: document.getElementById("st-sol-mode"),
+  stSolSize: document.getElementById("st-sol-size"),
+
+  runtimeDryRun: document.getElementById("runtime-dry-run"),
+  btnSaveStrategies: document.getElementById("btn-save-strategies"),
+
   btnStartAll: document.getElementById("btn-start-all"),
   btnStopAll: document.getElementById("btn-stop-all"),
   btnEmergency: document.getElementById("btn-emergency"),
@@ -163,6 +190,50 @@ function fillConfig(cfg) {
   els.exRemember.value = String(Boolean(ex.remember_secrets));
   els.exApiKeyHint.textContent = ex.api_private_key_set ? "已保存（加密）" : "未保存";
   els.exEthKeyHint.textContent = ex.eth_private_key_set ? "已保存（加密）" : "未保存";
+
+  const rt = cfg.runtime || {};
+  els.runtimeDryRun.value = String(Boolean(rt.dry_run));
+
+  const st = cfg.strategies || {};
+  fillStrategyRow("BTC", st.BTC || {}, "btc");
+  fillStrategyRow("ETH", st.ETH || {}, "eth");
+  fillStrategyRow("SOL", st.SOL || {}, "sol");
+}
+
+function fillStrategyRow(symbol, s, key) {
+  const enabled = Boolean(s.enabled);
+  const market = s.market_id == null ? "" : String(s.market_id);
+  const step = s.grid_step == null ? "" : String(s.grid_step);
+  const up = s.levels_up == null ? "" : String(s.levels_up);
+  const down = s.levels_down == null ? "" : String(s.levels_down);
+  const mode = s.order_size_mode || "notional";
+  const size = s.order_size_value == null ? "" : String(s.order_size_value);
+
+  if (key === "btc") {
+    els.stBtcEnabled.checked = enabled;
+    els.stBtcMarket.value = market;
+    els.stBtcStep.value = step;
+    els.stBtcUp.value = up;
+    els.stBtcDown.value = down;
+    els.stBtcMode.value = mode;
+    els.stBtcSize.value = size;
+  } else if (key === "eth") {
+    els.stEthEnabled.checked = enabled;
+    els.stEthMarket.value = market;
+    els.stEthStep.value = step;
+    els.stEthUp.value = up;
+    els.stEthDown.value = down;
+    els.stEthMode.value = mode;
+    els.stEthSize.value = size;
+  } else if (key === "sol") {
+    els.stSolEnabled.checked = enabled;
+    els.stSolMarket.value = market;
+    els.stSolStep.value = step;
+    els.stSolUp.value = up;
+    els.stSolDown.value = down;
+    els.stSolMode.value = mode;
+    els.stSolSize.value = size;
+  }
 }
 
 async function loadConfig() {
@@ -187,6 +258,57 @@ async function saveConfig() {
   fillConfig(resp.config || {});
   els.exApiKey.value = "";
   els.exEthKey.value = "";
+}
+
+function numOrNull(v) {
+  const s = String(v || "").trim();
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+function numOrZero(v) {
+  const n = numOrNull(v);
+  return n == null ? 0 : n;
+}
+
+async function saveStrategies() {
+  const runtime = { dry_run: els.runtimeDryRun.value === "true" };
+  const strategies = {
+    BTC: {
+      enabled: Boolean(els.stBtcEnabled.checked),
+      market_id: numOrNull(els.stBtcMarket.value),
+      grid_step: numOrZero(els.stBtcStep.value),
+      levels_up: Math.floor(numOrZero(els.stBtcUp.value)),
+      levels_down: Math.floor(numOrZero(els.stBtcDown.value)),
+      order_size_mode: els.stBtcMode.value,
+      order_size_value: numOrZero(els.stBtcSize.value),
+      post_only: true,
+    },
+    ETH: {
+      enabled: Boolean(els.stEthEnabled.checked),
+      market_id: numOrNull(els.stEthMarket.value),
+      grid_step: numOrZero(els.stEthStep.value),
+      levels_up: Math.floor(numOrZero(els.stEthUp.value)),
+      levels_down: Math.floor(numOrZero(els.stEthDown.value)),
+      order_size_mode: els.stEthMode.value,
+      order_size_value: numOrZero(els.stEthSize.value),
+      post_only: true,
+    },
+    SOL: {
+      enabled: Boolean(els.stSolEnabled.checked),
+      market_id: numOrNull(els.stSolMarket.value),
+      grid_step: numOrZero(els.stSolStep.value),
+      levels_up: Math.floor(numOrZero(els.stSolUp.value)),
+      levels_down: Math.floor(numOrZero(els.stSolDown.value)),
+      order_size_mode: els.stSolMode.value,
+      order_size_value: numOrZero(els.stSolSize.value),
+      post_only: true,
+    },
+  };
+
+  const resp = await apiFetch("/api/config", { method: "POST", body: { runtime, strategies } });
+  fillConfig(resp.config || {});
 }
 
 async function resolveAccountIndex() {
@@ -221,7 +343,11 @@ function renderBots(bots) {
       const st = r.running ? "运行中" : "停止";
       return `<tr>
         <td class="mono">${escapeHtml(r.symbol)}</td>
+        <td class="mono muted">${escapeHtml(r.market_id || "")}</td>
         <td>${escapeHtml(st)}</td>
+        <td class="mono muted">${escapeHtml(r.mid || "")}</td>
+        <td class="mono muted">${escapeHtml(r.center || "")}</td>
+        <td class="mono muted">${escapeHtml(`${r.desired || 0}/${r.existing || 0}`)}</td>
         <td class="mono muted">${escapeHtml(r.started_at || "")}</td>
         <td class="mono muted">${escapeHtml(r.last_tick_at || "")}</td>
         <td class="muted">${escapeHtml(r.message || "")}</td>
@@ -286,6 +412,13 @@ function wire() {
   els.btnSaveConfig.addEventListener("click", async () => {
     try {
       await saveConfig();
+    } catch (e) {
+      alert(e.message);
+    }
+  });
+  els.btnSaveStrategies.addEventListener("click", async () => {
+    try {
+      await saveStrategies();
     } catch (e) {
       alert(e.message);
     }
