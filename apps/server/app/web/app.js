@@ -245,8 +245,8 @@ async function saveConfig() {
   const exchange = {
     env: els.exEnv.value,
     l1_address: els.exL1.value.trim(),
-    account_index: els.exAccount.value.trim() ? Number(els.exAccount.value.trim()) : null,
-    api_key_index: els.exKeyIndex.value.trim() ? Number(els.exKeyIndex.value.trim()) : null,
+    account_index: els.exAccount.value.trim() ? Math.floor(Number(els.exAccount.value.trim())) : null,
+    api_key_index: els.exKeyIndex.value.trim() ? Math.floor(Number(els.exKeyIndex.value.trim())) : null,
     remember_secrets: els.exRemember.value === "true",
   };
   const api_private_key = els.exApiKey.value.trim();
@@ -274,10 +274,13 @@ function numOrZero(v) {
 
 async function saveStrategies() {
   const runtime = { dry_run: els.runtimeDryRun.value === "true" };
+  const btcMarket = numOrNull(els.stBtcMarket.value);
+  const ethMarket = numOrNull(els.stEthMarket.value);
+  const solMarket = numOrNull(els.stSolMarket.value);
   const strategies = {
     BTC: {
       enabled: Boolean(els.stBtcEnabled.checked),
-      market_id: numOrNull(els.stBtcMarket.value),
+      market_id: btcMarket == null ? null : Math.floor(btcMarket),
       grid_step: numOrZero(els.stBtcStep.value),
       levels_up: Math.floor(numOrZero(els.stBtcUp.value)),
       levels_down: Math.floor(numOrZero(els.stBtcDown.value)),
@@ -287,7 +290,7 @@ async function saveStrategies() {
     },
     ETH: {
       enabled: Boolean(els.stEthEnabled.checked),
-      market_id: numOrNull(els.stEthMarket.value),
+      market_id: ethMarket == null ? null : Math.floor(ethMarket),
       grid_step: numOrZero(els.stEthStep.value),
       levels_up: Math.floor(numOrZero(els.stEthUp.value)),
       levels_down: Math.floor(numOrZero(els.stEthDown.value)),
@@ -297,7 +300,7 @@ async function saveStrategies() {
     },
     SOL: {
       enabled: Boolean(els.stSolEnabled.checked),
-      market_id: numOrNull(els.stSolMarket.value),
+      market_id: solMarket == null ? null : Math.floor(solMarket),
       grid_step: numOrZero(els.stSolStep.value),
       levels_up: Math.floor(numOrZero(els.stSolUp.value)),
       levels_down: Math.floor(numOrZero(els.stSolDown.value)),

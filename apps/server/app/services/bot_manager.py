@@ -239,6 +239,10 @@ class BotManager:
 
                 prefix = _bot_prefix(trader.account_index, market_id, symbol)
                 desired = _desired_orders(symbol, market_id, center, step, strat, meta, prefix)
+                max_open_orders = int(strat.get("max_open_orders") or 0)
+                if max_open_orders > 0 and len(desired) > max_open_orders:
+                    keep = sorted(desired.items(), key=lambda kv: (kv[0] % 1000, kv[0]))[:max_open_orders]
+                    desired = dict(keep)
 
                 existing_orders = await trader.active_orders(market_id)
                 existing: Dict[int, Any] = {}
@@ -267,7 +271,6 @@ class BotManager:
                     base_size = int(getattr(o, "base_size", 0) or 0)
                     if is_ask != bool(spec["is_ask"]) or base_price != int(spec["price_int"]) or base_size != int(spec["base_amount_int"]):
                         cancels[cid] = cid
-                        creates[cid] = spec
 
                 max_actions = 10
                 actions_done = 0

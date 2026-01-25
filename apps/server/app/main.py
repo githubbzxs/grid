@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+import zlib
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -252,8 +253,41 @@ async def bots_stop(body: BotSymbolsBody, request: Request, _: str = Depends(req
 @app.post("/api/bots/emergency_stop")
 async def bots_emergency_stop(request: Request, _: str = Depends(require_auth)) -> Dict[str, Any]:
     await request.app.state.bot_manager.stop_all()
+    canceled: Dict[str, int] = {}
+    trader: Optional[LighterTrader] = request.app.state.lighter_trader
+    if trader:
+        config: Dict[str, Any] = request.app.state.config.read()
+        strategies = config.get("strategies", {}) or {}
+        for symbol, strat in strategies.items():
+            if not isinstance(strat, dict):
+                continue
+            market_id = strat.get("market_id")
+            if not isinstance(market_id, int):
+                continue
+            try:
+                orders = await trader.active_orders(market_id)
+            except Exception as exc:
+                request.app.state.logbus.publish(f"emergency.list.error symbol={symbol} err={type(exc).__name__}:{exc}")
+                continue
+
+            prefix = zlib.crc32(f"{trader.account_index}:{market_id}:{symbol}".encode("utf-8")) & 0x7FFFFFFF
+            ids = []
+            for o in orders:
+                cid = int(getattr(o, "client_order_index", 0) or 0)
+                if cid > 0 and (cid // 1_000_000) == prefix:
+                    ids.append(cid)
+
+            count = 0
+            for cid in ids[:200]:
+                try:
+                    await trader.cancel_order(market_id, cid)
+                    count += 1
+                except Exception as exc:
+                    request.app.state.logbus.publish(f"emergency.cancel.error symbol={symbol} id={cid} err={type(exc).__name__}:{exc}")
+            if count:
+                canceled[symbol] = count
     request.app.state.logbus.publish("bots.emergency_stop")
-    return {"ok": True, "bots": request.app.state.bot_manager.snapshot()}
+    return {"ok": True, "canceled": canceled, "bots": request.app.state.bot_manager.snapshot()}
 
 
 @app.get("/api/logs/recent")
