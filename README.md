@@ -30,6 +30,11 @@ Linux
 - 执行 `bash scripts/start.sh`
 - 浏览器打开 `http://127.0.0.1:9999/`
 
+Linux 一键启动命令
+--------------
+
+- `bash scripts/start.sh`
+
 公网部署（可选）
 ------------
 
