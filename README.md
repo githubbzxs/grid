@@ -65,3 +65,9 @@ WebUI 使用步骤（建议先模拟）
 ---
 
 详见 `PLAN.md`
+
+一键部署（Linux）
+------------
+
+- 从零部署并启动（拉取仓库 + 启动）：
+  - `bash -c "$(curl -fsSL https://raw.githubusercontent.com/githubbzxs/grid/main/scripts/bootstrap.sh)"`
