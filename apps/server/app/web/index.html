@@ -378,6 +378,37 @@
         </div>
 
         <div class="card">
+          <h2>历史记录</h2>
+          <div class="row">
+            <div>
+              <label>显示条数</label>
+              <input id="history-limit" type="number" min="0" step="50" placeholder="200" />
+              <div class="hint">0 表示全部</div>
+            </div>
+            <div class="btns" style="align-self: flex-end">
+              <button id="btn-refresh-history">刷新历史</button>
+            </div>
+          </div>
+          <table class="table" id="history-table">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>交易所</th>
+                <th>原因</th>
+                <th>标的</th>
+                <th>总收益</th>
+                <th>总成交量</th>
+                <th>交易笔数</th>
+                <th>净仓位</th>
+                <th>挂单数</th>
+                <th>减仓标的</th>
+              </tr>
+            </thead>
+            <tbody id="history-tbody"></tbody>
+          </table>
+        </div>
+
+        <div class="card">
           <h2>账户与挂单</h2>
           <div class="row">
             <div>

@@ -25,6 +25,7 @@ from app.exchanges.paradex.sdk_ops import fetch_perp_markets as paradex_fetch_pe
 from app.exchanges.paradex.trader import ParadexTrader
 from app.exchanges.types import Trader
 from app.services.bot_manager import BotManager
+from app.services.history_store import HistoryStore
 from app.strategies.grid.ids import grid_prefix, is_grid_client_order
 
 
@@ -349,6 +350,7 @@ async def _startup() -> None:
     app.state.config = ConfigStore(path=config_path)
     app.state.logbus = LogBus()
     app.state.bot_manager = BotManager(app.state.logbus, app.state.config)
+    app.state.history_store = HistoryStore(path=data_dir / "runtime_history.jsonl")
     app.state.sessions = {}
     app.state.fernet = None
     app.state.runtime_secrets = {}
@@ -543,6 +545,13 @@ async def bots_start(body: BotSymbolsBody, request: Request, _: str = Depends(re
 
 @app.post("/api/bots/stop")
 async def bots_stop(body: BotSymbolsBody, request: Request, _: str = Depends(require_auth)) -> Dict[str, Any]:
+    config: Dict[str, Any] = request.app.state.config.read()
+    exchange_name = _exchange_name(config)
+    try:
+        trader = await _ensure_trader(request, exchange_name)
+        await request.app.state.bot_manager.capture_history(trader, body.symbols, "manual_stop")
+    except Exception as exc:
+        request.app.state.logbus.publish(f"history.capture.error err={type(exc).__name__}:{exc}")
     runtime_stats: Dict[str, Any] = request.app.state.runtime_stats
     for symbol in body.symbols:
         sym = symbol.upper()
@@ -553,11 +562,10 @@ async def bots_stop(body: BotSymbolsBody, request: Request, _: str = Depends(req
 
 @app.post("/api/bots/emergency_stop")
 async def bots_emergency_stop(request: Request, _: str = Depends(require_auth)) -> Dict[str, Any]:
-    await request.app.state.bot_manager.stop_all()
-    request.app.state.runtime_stats = {}
-    canceled: Dict[str, int] = {}
     config: Dict[str, Any] = request.app.state.config.read()
     exchange_name = _exchange_name(config)
+    bots = request.app.state.bot_manager.snapshot()
+    running_symbols = [s for s, data in bots.items() if isinstance(data, dict) and data.get("running")]
     trader: Optional[Trader]
     if exchange_name == "paradex":
         trader = request.app.state.paradex_trader
@@ -569,8 +577,21 @@ async def bots_emergency_stop(request: Request, _: str = Depends(require_auth)) 
             trader = await _ensure_trader(request, exchange_name)
         except Exception as exc:
             request.app.state.logbus.publish(f"emergency.init.error exchange={exchange_name} err={type(exc).__name__}:{exc}")
-            request.app.state.logbus.publish("bots.emergency_stop")
-            return {"ok": True, "canceled": canceled, "bots": request.app.state.bot_manager.snapshot()}
+            trader = None
+
+    if trader:
+        try:
+            await request.app.state.bot_manager.capture_history(trader, running_symbols, "emergency_stop")
+        except Exception as exc:
+            request.app.state.logbus.publish(f"history.capture.error err={type(exc).__name__}:{exc}")
+
+    await request.app.state.bot_manager.stop_all()
+    request.app.state.runtime_stats = {}
+    canceled: Dict[str, int] = {}
+
+    if trader is None:
+        request.app.state.logbus.publish("bots.emergency_stop")
+        return {"ok": True, "canceled": canceled, "bots": request.app.state.bot_manager.snapshot()}
 
     strategies = config.get("strategies", {}) or {}
     for symbol, strat in strategies.items():
@@ -621,6 +642,16 @@ async def logs_recent(request: Request, _: str = Depends(require_auth)) -> Dict[
 @app.get("/api/logs/stream")
 async def logs_stream(request: Request, _: str = Depends(require_auth)) -> StreamingResponse:
     return StreamingResponse(request.app.state.logbus.stream(), media_type="text/event-stream")
+
+
+@app.get("/api/runtime/history")
+async def runtime_history(
+    request: Request,
+    limit: int = 200,
+    _: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    store: HistoryStore = request.app.state.history_store
+    return {"items": store.read(limit=limit)}
 
 
 @app.get("/api/runtime/status")

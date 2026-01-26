@@ -12,6 +12,7 @@ from app.core.logbus import LogBus
 from app.exchanges.lighter.trader import LighterTrader
 from app.exchanges.paradex.trader import ParadexTrader
 from app.exchanges.types import MarketMeta, Trader
+from app.services.history_store import HistoryStore
 from app.strategies.grid.ids import (
     CLIENT_ORDER_MAX,
     MAX_LEVEL_PER_SIDE,
@@ -24,6 +25,11 @@ from app.strategies.grid.ids import (
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def _fmt_decimal(value: Decimal, digits: int = 4) -> str:
+    q = Decimal(1) / (Decimal(10) ** int(digits))
+    return str(value.quantize(q, rounding=ROUND_HALF_UP))
 
 
 def _quantize(value: Decimal, decimals: int, rounding) -> Decimal:
@@ -204,6 +210,9 @@ class BotManager:
         self._stop_reason: Dict[str, str] = {}
         self._stop_check_at: Dict[str, int] = {}
         self._pnl_cache: Dict[str, tuple[int, Decimal]] = {}
+        self._base_pnl: Dict[str, Decimal] = {}
+        self._history = HistoryStore(self._config.path.parent / "runtime_history.jsonl")
+        self._history_recorded: set[str] = set()
 
     async def start(self, symbol: str, trader: Trader, manual: bool = True) -> None:
         symbol = symbol.upper()
@@ -215,6 +224,8 @@ class BotManager:
                 self._stop_reason.pop(symbol, None)
                 self._stop_check_at.pop(symbol, None)
                 self._pnl_cache.pop(symbol, None)
+                self._base_pnl.pop(symbol, None)
+                self._history_recorded.discard(symbol)
                 self._start_ms[symbol] = _now_ms()
             elif symbol not in self._start_ms:
                 self._start_ms[symbol] = _now_ms()
@@ -242,6 +253,8 @@ class BotManager:
             self._stop_reason.pop(symbol, None)
             self._stop_check_at.pop(symbol, None)
             self._pnl_cache.pop(symbol, None)
+            self._base_pnl.pop(symbol, None)
+            self._history_recorded.discard(symbol)
             self._start_ms.pop(symbol, None)
             restart_task = self._restart_tasks.pop(symbol, None)
             if restart_task and not restart_task.done():
@@ -303,6 +316,16 @@ class BotManager:
                 if market_id is None or (isinstance(market_id, str) and not market_id):
                     await self._update_status(symbol, running=True, message="未配置 market_id", last_tick_at=_now_iso())
                     continue
+
+                if symbol not in self._base_pnl:
+                    try:
+                        pnl_init = await self._position_pnl(trader, market_id, symbol)
+                        if pnl_init is not None:
+                            self._base_pnl[symbol] = pnl_init
+                    except Exception as exc:
+                        self._logbus.publish(
+                            f"pnl.init.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}"
+                        )
 
                 step = _safe_decimal(strat.get("grid_step") or 0)
                 if step <= 0:
@@ -375,7 +398,7 @@ class BotManager:
                                 reason_parts.append("运行时间达到")
                         if stop_after_volume > 0:
                             try:
-                                volume = await self._trade_volume_since(trader, market_id, start_ms, now_ms)
+                                volume, _ = await self._trade_stats_since(trader, market_id, start_ms, now_ms)
                                 if volume >= stop_after_volume:
                                     reason_parts.append("成交量达到")
                             except Exception as exc:
@@ -395,6 +418,7 @@ class BotManager:
                     clear_threshold = max(meta.min_base_amount, clear_step)
                     if abs(pos_base) <= clear_threshold:
                         await self._cancel_grid_orders(symbol, trader, market_id)
+                        await self._record_history(trader, [symbol], "stop_signal", stop_reason)
                         await self._update_status(
                             symbol,
                             running=False,
@@ -416,6 +440,7 @@ class BotManager:
                     if pnl is not None and pnl >= 0:
                         await self._cancel_grid_orders(symbol, trader, market_id)
                         await self._market_close_position(symbol, trader, market_id, pos_base, meta)
+                        await self._record_history(trader, [symbol], "stop_signal", stop_reason)
                         await self._update_status(
                             symbol,
                             running=False,
@@ -654,15 +679,14 @@ class BotManager:
             await self._update_status(symbol, running=False, message="异常退出", last_tick_at=_now_iso())
             await self._schedule_restart(symbol, trader)
 
-    async def _trade_volume_since(self, trader: Trader, market_id: str | int, start_ms: int, end_ms: int) -> Decimal:
+    async def _trade_stats_since(
+        self, trader: Trader, market_id: str | int, start_ms: int, end_ms: int
+    ) -> tuple[Decimal, int]:
         if isinstance(trader, LighterTrader):
-            try:
-                return await self._lighter_trades_since(trader, int(market_id), start_ms)
-            except Exception:
-                raise
+            return await self._lighter_trades_since(trader, int(market_id), start_ms)
         if isinstance(trader, ParadexTrader):
             return self._paradex_fills_since(trader, str(market_id), start_ms, end_ms)
-        return Decimal(0)
+        return Decimal(0), 0
 
     async def _lighter_trades_since(
         self,
@@ -670,8 +694,9 @@ class BotManager:
         market_id: int,
         start_ms: int,
         max_pages: int = 5,
-    ) -> Decimal:
+    ) -> tuple[Decimal, int]:
         total = Decimal(0)
+        count = 0
         cursor = None
         pages = 0
         reached_old = False
@@ -699,11 +724,12 @@ class BotManager:
                     size = _safe_decimal(_order_field(t, "size") or 0)
                     usd_amount = price * size
                 total += abs(usd_amount)
+                count += 1
             cursor = getattr(resp, "next_cursor", None) if not isinstance(resp, dict) else resp.get("next_cursor")
             if not cursor:
                 break
             pages += 1
-        return total
+        return total, count
 
     def _paradex_fills_since(
         self,
@@ -712,8 +738,9 @@ class BotManager:
         start_ms: int,
         end_ms: int,
         max_pages: int = 5,
-    ) -> Decimal:
+    ) -> tuple[Decimal, int]:
         total = Decimal(0)
+        count = 0
         cursor = None
         pages = 0
         while pages < max_pages:
@@ -728,11 +755,12 @@ class BotManager:
                 price = _safe_decimal(item.get("price") or 0)
                 size = _safe_decimal(item.get("size") or 0)
                 total += abs(price * size)
+                count += 1
             cursor = data.get("next") or data.get("next_cursor")
             if not cursor:
                 break
             pages += 1
-        return total
+        return total, count
 
     async def _position_pnl(self, trader: Trader, market_id: str | int, symbol: str) -> Optional[Decimal]:
         now_ms = _now_ms()
@@ -846,6 +874,170 @@ class BotManager:
                 )
         if canceled:
             self._logbus.publish(f"stop.cancel.done symbol={symbol} market_id={market_id} canceled={canceled}")
+
+    async def capture_history(self, trader: Trader, symbols: list[str], reason: str) -> None:
+        await self._record_history(trader, symbols, reason, "")
+
+    async def _record_history(
+        self,
+        trader: Trader,
+        symbols: list[str],
+        reason: str,
+        stop_reason: str,
+    ) -> None:
+        record, recorded = await self._build_history_record(trader, symbols, reason, stop_reason)
+        if not record:
+            return
+        try:
+            self._history.append(record)
+        except Exception as exc:
+            self._logbus.publish(f"history.append.error err={type(exc).__name__}:{exc}")
+            return
+        async with self._lock:
+            for symbol in recorded:
+                self._history_recorded.add(symbol)
+
+    async def _build_history_record(
+        self,
+        trader: Trader,
+        symbols: list[str],
+        reason: str,
+        stop_reason: str,
+    ) -> tuple[Optional[Dict[str, Any]], list[str]]:
+        exchange = "paradex" if isinstance(trader, ParadexTrader) else "lighter"
+        now_iso = _now_iso()
+        now_ms = _now_ms()
+        totals_profit = Decimal(0)
+        totals_volume = Decimal(0)
+        totals_trades = 0
+        totals_position = Decimal(0)
+        totals_orders = 0
+        reduce_symbols: list[str] = []
+        symbols_data: Dict[str, Any] = {}
+        recorded_symbols: list[str] = []
+
+        for symbol in symbols:
+            sym = symbol.upper()
+            async with self._lock:
+                if sym in self._history_recorded:
+                    continue
+                status = self._status.get(sym)
+                if not status or not status.running:
+                    continue
+                started_at = status.started_at
+                start_ms = self._start_ms.get(sym) or _parse_iso_ms(started_at) or now_ms
+                self._start_ms[sym] = int(start_ms)
+
+            data = await self._symbol_runtime_snapshot(trader, sym, status, int(start_ms), now_ms)
+            if not data:
+                continue
+            symbols_data[sym] = data
+            recorded_symbols.append(sym)
+
+            profit_v = _safe_decimal(data.get("profit") or 0)
+            volume_v = _safe_decimal(data.get("volume") or 0)
+            position_v = _safe_decimal(data.get("position_notional") or 0)
+            totals_profit += profit_v
+            totals_volume += volume_v
+            totals_trades += int(data.get("trade_count") or 0)
+            totals_position += position_v
+            totals_orders += int(data.get("open_orders") or 0)
+            if data.get("reduce_mode"):
+                reduce_symbols.append(sym)
+
+        if not symbols_data:
+            return None, []
+
+        record: Dict[str, Any] = {
+            "created_at": now_iso,
+            "exchange": exchange,
+            "reason": reason,
+            "stop_reason": stop_reason,
+            "totals": {
+                "profit": _fmt_decimal(totals_profit),
+                "volume": _fmt_decimal(totals_volume),
+                "trade_count": totals_trades,
+                "position_notional": _fmt_decimal(totals_position),
+                "open_orders": totals_orders,
+                "reduce_symbols": reduce_symbols,
+                "running": len(symbols_data),
+            },
+            "symbols": symbols_data,
+        }
+        return record, recorded_symbols
+
+    async def _symbol_runtime_snapshot(
+        self,
+        trader: Trader,
+        symbol: str,
+        status: BotStatus,
+        start_ms: int,
+        now_ms: int,
+    ) -> Optional[Dict[str, Any]]:
+        cfg = self._config.read()
+        strat = (cfg.get("strategies", {}) or {}).get(symbol, {}) or {}
+        market_id = strat.get("market_id")
+        if market_id is None or (isinstance(market_id, str) and not market_id.strip()):
+            market_id = status.market_id
+        if market_id is None or (isinstance(market_id, str) and not str(market_id).strip()):
+            return None
+
+        if isinstance(trader, ParadexTrader):
+            market_id = str(market_id)
+        elif isinstance(trader, LighterTrader) and isinstance(market_id, str):
+            try:
+                market_id = int(market_id)
+            except Exception:
+                pass
+
+        pnl_now = await self._position_pnl(trader, market_id, symbol)
+        if pnl_now is None:
+            pnl_now = Decimal(0)
+        base_pnl = self._base_pnl.get(symbol)
+        if base_pnl is None:
+            self._base_pnl[symbol] = pnl_now
+            base_pnl = pnl_now
+        profit = pnl_now - _safe_decimal(base_pnl)
+
+        volume = Decimal(0)
+        trade_count = 0
+        try:
+            volume, trade_count = await self._trade_stats_since(trader, market_id, start_ms, now_ms)
+        except Exception as exc:
+            self._logbus.publish(
+                f"history.trades.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}"
+            )
+
+        pos_base = Decimal(0)
+        try:
+            pos_base = await trader.position_base(market_id)
+        except Exception:
+            pos_base = Decimal(0)
+
+        mid_value = _safe_decimal(status.mid or 0)
+        if mid_value <= 0:
+            try:
+                bid, ask = await trader.best_bid_ask(market_id)
+                if bid is not None and ask is not None:
+                    mid_value = (bid + ask) / 2
+            except Exception:
+                mid_value = Decimal(0)
+
+        position_notional = abs(pos_base * mid_value) if mid_value > 0 else Decimal(0)
+        open_orders = int(status.existing or 0)
+        reduce_mode = bool(status.reduce_mode)
+
+        return {
+            "symbol": symbol,
+            "market_id": market_id,
+            "started_at": status.started_at,
+            "profit": _fmt_decimal(profit),
+            "volume": _fmt_decimal(volume),
+            "trade_count": trade_count,
+            "position_notional": _fmt_decimal(position_notional),
+            "open_orders": open_orders,
+            "reduce_mode": reduce_mode,
+        }
 
     async def _schedule_restart(self, symbol: str, trader: Trader) -> None:
         cfg = self._config.read()

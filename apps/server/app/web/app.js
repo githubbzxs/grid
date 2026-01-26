@@ -101,6 +101,10 @@ const els = {
   rtUpdated: document.getElementById("rt-updated"),
   runtimeTbody: document.getElementById("runtime-tbody"),
 
+  historyLimit: document.getElementById("history-limit"),
+  btnRefreshHistory: document.getElementById("btn-refresh-history"),
+  historyTbody: document.getElementById("history-tbody"),
+
   logs: document.getElementById("logs"),
 };
 
@@ -212,6 +216,7 @@ async function refreshAuth() {
     await loadConfig();
     await refreshBots();
     await refreshRuntimeStatus();
+    await refreshHistory();
     startRuntimeLoop();
   } catch (e) {
     setPill(false, `错误：${e.message}`);
@@ -298,6 +303,9 @@ function fillConfig(cfg) {
   }
   if (els.runtimeStopVolume) {
     els.runtimeStopVolume.value = rt.stop_after_volume == null ? "0" : String(rt.stop_after_volume);
+  }
+  if (els.historyLimit && !els.historyLimit.value) {
+    els.historyLimit.value = "200";
   }
 
   const st = cfg.strategies || {};
@@ -591,6 +599,33 @@ async function refreshRuntimeStatus() {
   renderRuntimeStatus(resp || {});
 }
 
+function renderHistory(items) {
+  const rows = (items || []).map((r) => {
+    const totals = r.totals || {};
+    const symbols = Object.keys(r.symbols || {}).join(", ");
+    const reason = r.stop_reason ? `${r.reason || ""}(${r.stop_reason})` : r.reason || "";
+    return `<tr>
+      <td class="mono muted">${escapeHtml(r.created_at || "")}</td>
+      <td class="mono">${escapeHtml(r.exchange || "")}</td>
+      <td>${escapeHtml(reason)}</td>
+      <td class="mono">${escapeHtml(symbols)}</td>
+      <td class="mono">${escapeHtml(fmtNumber(totals.profit, 4))}</td>
+      <td class="mono">${escapeHtml(fmtNumber(totals.volume, 4))}</td>
+      <td class="mono">${escapeHtml(String(totals.trade_count || 0))}</td>
+      <td class="mono">${escapeHtml(fmtNumber(totals.position_notional, 4))}</td>
+      <td class="mono">${escapeHtml(String(totals.open_orders || 0))}</td>
+      <td class="mono">${escapeHtml((totals.reduce_symbols || []).join(", ") || "无")}</td>
+    </tr>`;
+  });
+  els.historyTbody.innerHTML = rows.join("");
+}
+
+async function refreshHistory() {
+  const limit = els.historyLimit ? Math.floor(numOrZero(els.historyLimit.value)) : 200;
+  const resp = await apiFetch(`/api/runtime/history?limit=${encodeURIComponent(limit)}`);
+  renderHistory(resp.items || []);
+}
+
 function startRuntimeLoop() {
   if (runtimeTimer) {
     clearInterval(runtimeTimer);
@@ -768,6 +803,15 @@ function wire() {
       alert(e.message);
     }
   });
+  if (els.btnRefreshHistory) {
+    els.btnRefreshHistory.addEventListener("click", async () => {
+      try {
+        await refreshHistory();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  }
 }
 
 async function loop() {
