@@ -522,24 +522,38 @@ class BotManager:
 
                 cancel_orders: list[tuple[Any, Decimal]] = []
                 keep_ask_prices: set[Decimal] = set()
-                for price, orders in asks_by_price.items():
-                    if price in desired_ask_set:
-                        keep_ask_prices.add(price)
-                        if len(orders) > 1:
-                            for extra in orders[1:]:
-                                cancel_orders.append((extra, price))
-                    else:
+                if desired_asks:
+                    ask_max = max(desired_asks)
+                    for price, orders in asks_by_price.items():
+                        if price in desired_ask_set:
+                            keep_ask_prices.add(price)
+                            if len(orders) > 1:
+                                for extra in orders[1:]:
+                                    cancel_orders.append((extra, price))
+                            continue
+                        if price > ask_max:
+                            for o in orders:
+                                cancel_orders.append((o, price))
+                else:
+                    for price, orders in asks_by_price.items():
                         for o in orders:
                             cancel_orders.append((o, price))
 
                 keep_bid_prices: set[Decimal] = set()
-                for price, orders in bids_by_price.items():
-                    if price in desired_bid_set:
-                        keep_bid_prices.add(price)
-                        if len(orders) > 1:
-                            for extra in orders[1:]:
-                                cancel_orders.append((extra, price))
-                    else:
+                if desired_bids:
+                    bid_min = min(desired_bids)
+                    for price, orders in bids_by_price.items():
+                        if price in desired_bid_set:
+                            keep_bid_prices.add(price)
+                            if len(orders) > 1:
+                                for extra in orders[1:]:
+                                    cancel_orders.append((extra, price))
+                            continue
+                        if price < bid_min:
+                            for o in orders:
+                                cancel_orders.append((o, price))
+                else:
+                    for price, orders in bids_by_price.items():
                         for o in orders:
                             cancel_orders.append((o, price))
 
