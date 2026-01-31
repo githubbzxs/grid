@@ -61,6 +61,7 @@ body {
   flex-wrap: wrap;
   gap: 8px;
   flex: 1;
+  min-width: 0;
 }
 
 .nav-links a {
@@ -152,12 +153,34 @@ body {
 
 @media (max-width: 900px) {
   .topnav {
-    align-items: flex-start;
+    flex-wrap: wrap;
+    align-items: center;
   }
 
   .top-actions {
-    width: 100%;
-    justify-content: space-between;
+    margin-left: auto;
+    justify-content: flex-end;
+  }
+
+  .nav-links {
+    order: 3;
+    flex: 1 1 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-top: 6px;
+  }
+
+  .nav-links a {
+    flex: 0 0 auto;
+  }
+
+  .nav-links::-webkit-scrollbar {
+    display: none;
+  }
+
+  .nav-links {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
   }
 }
 
