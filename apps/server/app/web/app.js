@@ -107,6 +107,8 @@ let authState = { setup_required: true, authenticated: false, unlocked: false };
 let logSource = null;
 let lastMarkets = [];
 let runtimeTimer = null;
+const navLinks = Array.from(document.querySelectorAll(".nav-links a"));
+const pageSections = Array.from(document.querySelectorAll(".page-section"));
 
 function currentExchange() {
   const name = (els.exName && els.exName.value) || "lighter";
@@ -179,6 +181,43 @@ function startLogStream() {
     logSource.close();
     logSource = null;
   };
+}
+
+function getSectionIdFromHash() {
+  const raw = String(window.location.hash || "").trim();
+  if (!raw || raw === "#") return "";
+  return raw.startsWith("#") ? raw.slice(1) : raw;
+}
+
+function activateSection(id) {
+  if (!pageSections.length) return;
+  const target = pageSections.find((section) => section.id === id) || pageSections[0];
+  pageSections.forEach((section) => {
+    section.classList.toggle("active", section === target);
+  });
+  navLinks.forEach((link) => {
+    const linkTarget = link.dataset.target || "";
+    link.classList.toggle("active", linkTarget === target.id);
+  });
+  if (target && window.location.hash !== `#${target.id}`) {
+    history.replaceState(null, "", `#${target.id}`);
+  }
+  window.scrollTo(0, 0);
+}
+
+function initNavigation() {
+  if (!pageSections.length || !navLinks.length) return;
+  navLinks.forEach((link) => {
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      const target = link.dataset.target || "";
+      activateSection(target);
+    });
+  });
+  activateSection(getSectionIdFromHash());
+  window.addEventListener("hashchange", () => {
+    activateSection(getSectionIdFromHash());
+  });
 }
 
 async function refreshAuth() {
@@ -685,6 +724,7 @@ function escapeHtml(s) {
 }
 
 function wire() {
+  initNavigation();
   if (els.exName) {
     els.exName.addEventListener("change", () => {
       lastMarkets = [];

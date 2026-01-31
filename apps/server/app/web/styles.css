@@ -78,6 +78,12 @@ body {
   background: var(--accent-soft);
 }
 
+.nav-links a.active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--accent-strong);
+}
+
 .top-actions {
   display: flex;
   align-items: center;
@@ -91,6 +97,14 @@ body {
 
 .section {
   scroll-margin-top: 90px;
+}
+
+.page-section {
+  display: none;
+}
+
+.page-section.active {
+  display: block;
 }
 
 .login-wrap {
