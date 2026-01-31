@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
 from typing import Any, Dict, Optional
@@ -194,6 +194,38 @@ class BotStatus:
         }
 
 
+@dataclass
+class SimOrder:
+    order_index: int
+    client_order_index: int
+    price: Decimal
+    base_qty: Decimal
+    is_ask: bool
+    created_at_ms: int
+
+    @property
+    def side(self) -> str:
+        return "ask" if self.is_ask else "bid"
+
+
+@dataclass
+class SimTrade:
+    ts_ms: int
+    price: Decimal
+    size: Decimal
+    side: str
+
+
+@dataclass
+class SimState:
+    orders: Dict[int, SimOrder] = field(default_factory=dict)
+    trades: list[SimTrade] = field(default_factory=list)
+    position_base: Decimal = Decimal(0)
+    position_cost: Decimal = Decimal(0)
+    realized_pnl: Decimal = Decimal(0)
+    last_mid: Decimal = Decimal(0)
+
+
 class BotManager:
     def __init__(self, logbus: LogBus, config: ConfigStore) -> None:
         self._logbus = logbus
@@ -211,6 +243,7 @@ class BotManager:
         self._stop_check_at: Dict[str, int] = {}
         self._pnl_cache: Dict[str, tuple[int, Decimal]] = {}
         self._base_pnl: Dict[str, Decimal] = {}
+        self._sim_states: Dict[str, SimState] = {}
         self._history = HistoryStore(self._config.path.parent / "runtime_history.jsonl")
         self._history_recorded: set[str] = set()
 
@@ -225,6 +258,7 @@ class BotManager:
                 self._stop_check_at.pop(symbol, None)
                 self._pnl_cache.pop(symbol, None)
                 self._base_pnl.pop(symbol, None)
+                self._sim_reset(symbol)
                 self._history_recorded.discard(symbol)
                 self._start_ms[symbol] = _now_ms()
             elif symbol not in self._start_ms:
@@ -283,6 +317,150 @@ class BotManager:
     def snapshot(self) -> Dict[str, Any]:
         return {k: v.to_dict() for k, v in self._status.items()}
 
+    @staticmethod
+    def _sim_enabled(runtime: Dict[str, Any]) -> bool:
+        if not bool(runtime.get("dry_run", True)):
+            return False
+        return bool(runtime.get("simulate_fill", False))
+
+    def _sim_state(self, symbol: str) -> SimState:
+        sym = symbol.upper()
+        state = self._sim_states.get(sym)
+        if state is None:
+            state = SimState()
+            self._sim_states[sym] = state
+        return state
+
+    def _sim_reset(self, symbol: str) -> None:
+        self._sim_states.pop(symbol.upper(), None)
+
+    def sim_orders(self, symbol: str) -> list[SimOrder]:
+        return list(self._sim_state(symbol).orders.values())
+
+    def sim_open_orders(self, symbol: str) -> int:
+        return len(self._sim_state(symbol).orders)
+
+    def sim_position_base(self, symbol: str) -> Decimal:
+        return self._sim_state(symbol).position_base
+
+    def sim_last_mid(self, symbol: str) -> Decimal:
+        return self._sim_state(symbol).last_mid
+
+    def sim_pnl(self, symbol: str, mid_value: Optional[Decimal] = None) -> Decimal:
+        state = self._sim_state(symbol)
+        mid = mid_value if mid_value is not None and mid_value > 0 else state.last_mid
+        return state.realized_pnl + (mid * state.position_base - state.position_cost)
+
+    def sim_trade_stats(self, symbol: str, start_ms: int, end_ms: int) -> tuple[Decimal, int]:
+        state = self._sim_state(symbol)
+        total = Decimal(0)
+        count = 0
+        for trade in state.trades:
+            if trade.ts_ms < start_ms or trade.ts_ms > end_ms:
+                continue
+            total += abs(trade.price * trade.size)
+            count += 1
+        return total, count
+
+    def _sim_update_mid(self, symbol: str, mid: Decimal) -> None:
+        self._sim_state(symbol).last_mid = mid
+
+    def _sim_create_order(
+        self,
+        symbol: str,
+        order_index: int,
+        client_order_index: int,
+        price: Decimal,
+        base_qty: Decimal,
+        is_ask: bool,
+        created_at_ms: int,
+    ) -> None:
+        state = self._sim_state(symbol)
+        state.orders[order_index] = SimOrder(
+            order_index=order_index,
+            client_order_index=client_order_index,
+            price=price,
+            base_qty=base_qty,
+            is_ask=is_ask,
+            created_at_ms=created_at_ms,
+        )
+
+    def _sim_cancel_order(self, symbol: str, order_index: int) -> None:
+        state = self._sim_state(symbol)
+        state.orders.pop(order_index, None)
+
+    def _sim_apply_trade(self, symbol: str, side: str, price: Decimal, size: Decimal, ts_ms: int) -> None:
+        state = self._sim_state(symbol)
+        size = abs(size)
+        if size <= 0:
+            return
+        if side == "bid":
+            if state.position_base >= 0:
+                state.position_base += size
+                state.position_cost += price * size
+            else:
+                short_size = abs(state.position_base)
+                cover = min(size, short_size)
+                avg_entry = abs(state.position_cost / state.position_base) if state.position_base != 0 else Decimal(0)
+                state.realized_pnl += (avg_entry - price) * cover
+                remaining = size - cover
+                state.position_base += cover
+                if state.position_base < 0:
+                    state.position_cost = avg_entry * state.position_base
+                else:
+                    state.position_cost = Decimal(0)
+                    if remaining > 0:
+                        state.position_base = remaining
+                        state.position_cost = price * remaining
+        else:
+            if state.position_base <= 0:
+                state.position_base -= size
+                state.position_cost -= price * size
+            else:
+                cover = min(size, state.position_base)
+                avg_entry = abs(state.position_cost / state.position_base) if state.position_base != 0 else Decimal(0)
+                state.realized_pnl += (price - avg_entry) * cover
+                remaining = size - cover
+                state.position_base -= cover
+                if state.position_base > 0:
+                    state.position_cost = avg_entry * state.position_base
+                else:
+                    state.position_cost = Decimal(0)
+                    if remaining > 0:
+                        state.position_base = -remaining
+                        state.position_cost = -price * remaining
+
+        state.trades.append(SimTrade(ts_ms=ts_ms, price=price, size=size, side=side))
+
+    def _sim_match_orders(self, symbol: str, bid: Decimal, ask: Decimal, now_ms: int) -> None:
+        state = self._sim_state(symbol)
+        if not state.orders:
+            return
+        filled: list[SimOrder] = []
+        for order in state.orders.values():
+            if order.is_ask:
+                if bid >= order.price:
+                    filled.append(order)
+            else:
+                if ask <= order.price:
+                    filled.append(order)
+        if not filled:
+            return
+        for order in filled:
+            self._sim_apply_trade(symbol, order.side, order.price, order.base_qty, now_ms)
+            state.orders.pop(order.order_index, None)
+            self._logbus.publish(
+                f"sim.fill symbol={symbol} side={order.side} price={order.price} size={order.base_qty}"
+            )
+
+    def _sim_market_close(self, symbol: str, price: Decimal) -> None:
+        state = self._sim_state(symbol)
+        size = abs(state.position_base)
+        if size <= 0:
+            return
+        side = "ask" if state.position_base > 0 else "bid"
+        self._sim_apply_trade(symbol, side, price, size, _now_ms())
+
     async def _run(self, symbol: str, trader: Trader) -> None:
         interval_s = 0.1
         try:
@@ -291,6 +469,7 @@ class BotManager:
                 cfg = self._config.read()
                 runtime = cfg.get("runtime", {}) or {}
                 dry_run = bool(runtime.get("dry_run", True))
+                simulate = self._sim_enabled(runtime)
                 interval_ms = runtime.get("loop_interval_ms", 100)
                 try:
                     interval_ms = float(interval_ms)
@@ -319,7 +498,7 @@ class BotManager:
 
                 if symbol not in self._base_pnl:
                     try:
-                        pnl_init = await self._position_pnl(trader, market_id, symbol)
+                        pnl_init = await self._position_pnl(trader, market_id, symbol, simulate=simulate)
                         if pnl_init is not None:
                             self._base_pnl[symbol] = pnl_init
                     except Exception as exc:
@@ -343,6 +522,9 @@ class BotManager:
                 center = _quantize(center, meta.price_decimals, ROUND_HALF_UP)
 
                 now_ms = _now_ms()
+                if simulate:
+                    self._sim_update_mid(symbol, mid)
+                    self._sim_match_orders(symbol, bid, ask, now_ms)
                 start_ms = self._start_ms.get(symbol)
                 if start_ms is None:
                     status = self._status.get(symbol)
@@ -364,14 +546,19 @@ class BotManager:
 
                 need_position = max_pos > 0 or stop_signal or stop_after_minutes > 0 or stop_after_volume > 0
                 if need_position:
-                    try:
-                        pos_base = await trader.position_base(market_id)
+                    if simulate:
+                        pos_base = self.sim_position_base(symbol)
                         if mid > 0:
                             pos_notional = abs(pos_base * mid)
-                    except Exception as exc:
-                        self._logbus.publish(
-                            f"position.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}"
-                        )
+                    else:
+                        try:
+                            pos_base = await trader.position_base(market_id)
+                            if mid > 0:
+                                pos_notional = abs(pos_base * mid)
+                        except Exception as exc:
+                            self._logbus.publish(
+                                f"position.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}"
+                            )
 
                 if max_pos > 0 and pos_notional is not None:
                     if reduce_exit <= 0 or reduce_exit >= max_pos:
@@ -398,7 +585,10 @@ class BotManager:
                                 reason_parts.append("运行时间达到")
                         if stop_after_volume > 0:
                             try:
-                                volume, _ = await self._trade_stats_since(trader, market_id, start_ms, now_ms)
+                                if simulate:
+                                    volume, _ = self.sim_trade_stats(symbol, start_ms, now_ms)
+                                else:
+                                    volume, _ = await self._trade_stats_since(trader, market_id, start_ms, now_ms)
                                 if volume >= stop_after_volume:
                                     reason_parts.append("成交量达到")
                             except Exception as exc:
@@ -417,7 +607,7 @@ class BotManager:
                     clear_step = Decimal(1) / (Decimal(10) ** int(meta.size_decimals))
                     clear_threshold = max(meta.min_base_amount, clear_step)
                     if abs(pos_base) <= clear_threshold:
-                        await self._cancel_grid_orders(symbol, trader, market_id)
+                        await self._cancel_grid_orders(symbol, trader, market_id, simulate=simulate)
                         await self._record_history(trader, [symbol], "stop_signal", stop_reason)
                         await self._update_status(
                             symbol,
@@ -436,10 +626,13 @@ class BotManager:
                         self._logbus.publish(f"bot.stop.final symbol={symbol} reason=position_clear")
                         return
 
-                    pnl = await self._position_pnl(trader, market_id, symbol)
+                    pnl = await self._position_pnl(trader, market_id, symbol, simulate=simulate)
                     if pnl is not None and pnl >= 0:
-                        await self._cancel_grid_orders(symbol, trader, market_id)
-                        await self._market_close_position(symbol, trader, market_id, pos_base, meta)
+                        await self._cancel_grid_orders(symbol, trader, market_id, simulate=simulate)
+                        if simulate:
+                            self._sim_market_close(symbol, mid)
+                        else:
+                            await self._market_close_position(symbol, trader, market_id, pos_base, meta)
                         await self._record_history(trader, [symbol], "stop_signal", stop_reason)
                         await self._update_status(
                             symbol,
@@ -459,7 +652,10 @@ class BotManager:
                         return
 
                 prefix = grid_prefix(trader.account_key, market_id, symbol)
-                existing_orders = await trader.active_orders(market_id)
+                if simulate:
+                    existing_orders = self.sim_orders(symbol)
+                else:
+                    existing_orders = await trader.active_orders(market_id)
                 existing: Dict[int, Any] = {}
                 asks_by_price: Dict[Decimal, list[Any]] = {}
                 bids_by_price: Dict[Decimal, list[Any]] = {}
@@ -576,7 +772,19 @@ class BotManager:
                                 f"order.cancel.error symbol={symbol} market_id={market_id} client_id={client_index} err=missing_order_index"
                             )
                             continue
-                        if dry_run:
+                        if simulate:
+                            try:
+                                order_id = int(order_index)
+                            except Exception:
+                                self._logbus.publish(
+                                    f"sim.cancel.error symbol={symbol} market_id={market_id} client_id={client_index} err=bad_order_id"
+                                )
+                                continue
+                            self._sim_cancel_order(symbol, order_id)
+                            self._logbus.publish(
+                                f"sim.cancel symbol={symbol} market_id={market_id} order={order_id} client_id={client_index} price={price_q}"
+                            )
+                        elif dry_run:
                             self._logbus.publish(
                                 f"dry_run cancel symbol={symbol} market_id={market_id} order={order_index} client_id={client_index} price={price_q}"
                             )
@@ -643,7 +851,20 @@ class BotManager:
                         price_int = _to_scaled_int(price_q, meta.price_decimals, ROUND_HALF_UP)
                         base_int = _to_scaled_int(base_qty_q, meta.size_decimals, ROUND_DOWN)
 
-                        if dry_run:
+                        if simulate:
+                            self._sim_create_order(
+                                symbol,
+                                order_index=int(oid),
+                                client_order_index=int(oid),
+                                price=price_q,
+                                base_qty=base_qty_q,
+                                is_ask=(side == "ask"),
+                                created_at_ms=now_ms,
+                            )
+                            self._logbus.publish(
+                                f"sim.create symbol={symbol} market_id={market_id} id={oid} ask={side == 'ask'} price={price_int} size={base_int}"
+                            )
+                        elif dry_run:
                             self._logbus.publish(
                                 f"dry_run create symbol={symbol} market_id={market_id} id={oid} ask={side == 'ask'} price={price_int} size={base_int}"
                             )
@@ -661,7 +882,10 @@ class BotManager:
                             except Exception as exc:
                                 self._logbus.publish(f"order.create.error symbol={symbol} id={oid} err={type(exc).__name__}:{exc}")
 
-                msg = "模拟运行" if dry_run else "实盘运行"
+                if simulate:
+                    msg = "模拟成交"
+                else:
+                    msg = "模拟运行" if dry_run else "实盘运行"
                 if reduce_mode:
                     suffix = "减仓模式"
                     if pos_notional is not None:
@@ -776,14 +1000,23 @@ class BotManager:
             pages += 1
         return total, count
 
-    async def _position_pnl(self, trader: Trader, market_id: str | int, symbol: str) -> Optional[Decimal]:
+    async def _position_pnl(
+        self,
+        trader: Trader,
+        market_id: str | int,
+        symbol: str,
+        simulate: bool = False,
+    ) -> Optional[Decimal]:
         now_ms = _now_ms()
-        cached = self._pnl_cache.get(symbol)
-        if cached and (now_ms - cached[0]) <= 2000:
-            return cached[1]
+        if not simulate:
+            cached = self._pnl_cache.get(symbol)
+            if cached and (now_ms - cached[0]) <= 2000:
+                return cached[1]
 
         pnl: Optional[Decimal] = None
-        if isinstance(trader, LighterTrader):
+        if simulate:
+            pnl = self.sim_pnl(symbol)
+        elif isinstance(trader, LighterTrader):
             resp = await trader._account_api.account(by="index", value=str(int(trader.account_index)))
             if hasattr(resp, "model_dump"):
                 data = resp.model_dump()
@@ -827,7 +1060,7 @@ class BotManager:
                 pnl = _safe_decimal(item.get("realized_positional_pnl") or 0) + _safe_decimal(item.get("unrealized_pnl") or 0)
                 break
 
-        if pnl is not None:
+        if pnl is not None and not simulate:
             self._pnl_cache[symbol] = (now_ms, pnl)
         return pnl
 
@@ -859,7 +1092,21 @@ class BotManager:
                 f"order.market_close.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}"
             )
 
-    async def _cancel_grid_orders(self, symbol: str, trader: Trader, market_id: str | int) -> None:
+    async def _cancel_grid_orders(
+        self,
+        symbol: str,
+        trader: Trader,
+        market_id: str | int,
+        simulate: bool = False,
+    ) -> None:
+        if simulate:
+            state = self._sim_state(symbol)
+            canceled = len(state.orders)
+            state.orders.clear()
+            if canceled:
+                self._logbus.publish(f"sim.cancel.done symbol={symbol} market_id={market_id} canceled={canceled}")
+            return
+
         prefix = grid_prefix(trader.account_key, market_id, symbol)
         try:
             orders = await trader.active_orders(market_id)
@@ -918,6 +1165,8 @@ class BotManager:
         reason: str,
         stop_reason: str,
     ) -> tuple[Optional[Dict[str, Any]], list[str]]:
+        cfg = self._config.read()
+        simulate = self._sim_enabled(cfg.get("runtime", {}) or {})
         exchange = "paradex" if isinstance(trader, ParadexTrader) else "lighter"
         now_iso = _now_iso()
         now_ms = _now_ms()
@@ -942,7 +1191,7 @@ class BotManager:
                 start_ms = self._start_ms.get(sym) or _parse_iso_ms(started_at) or now_ms
                 self._start_ms[sym] = int(start_ms)
 
-            data = await self._symbol_runtime_snapshot(trader, sym, status, int(start_ms), now_ms)
+            data = await self._symbol_runtime_snapshot(trader, sym, status, int(start_ms), now_ms, simulate)
             if not data:
                 continue
             symbols_data[sym] = data
@@ -987,6 +1236,7 @@ class BotManager:
         status: BotStatus,
         start_ms: int,
         now_ms: int,
+        simulate: bool = False,
     ) -> Optional[Dict[str, Any]]:
         cfg = self._config.read()
         strat = (cfg.get("strategies", {}) or {}).get(symbol, {}) or {}
@@ -1004,7 +1254,7 @@ class BotManager:
             except Exception:
                 pass
 
-        pnl_now = await self._position_pnl(trader, market_id, symbol)
+        pnl_now = await self._position_pnl(trader, market_id, symbol, simulate=simulate)
         if pnl_now is None:
             pnl_now = Decimal(0)
         base_pnl = self._base_pnl.get(symbol)
@@ -1016,19 +1266,27 @@ class BotManager:
         volume = Decimal(0)
         trade_count = 0
         try:
-            volume, trade_count = await self._trade_stats_since(trader, market_id, start_ms, now_ms)
+            if simulate:
+                volume, trade_count = self.sim_trade_stats(symbol, start_ms, now_ms)
+            else:
+                volume, trade_count = await self._trade_stats_since(trader, market_id, start_ms, now_ms)
         except Exception as exc:
             self._logbus.publish(
                 f"history.trades.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}"
             )
 
         pos_base = Decimal(0)
-        try:
-            pos_base = await trader.position_base(market_id)
-        except Exception:
-            pos_base = Decimal(0)
+        if simulate:
+            pos_base = self.sim_position_base(symbol)
+        else:
+            try:
+                pos_base = await trader.position_base(market_id)
+            except Exception:
+                pos_base = Decimal(0)
 
         mid_value = _safe_decimal(status.mid or 0)
+        if mid_value <= 0 and simulate:
+            mid_value = self.sim_last_mid(symbol)
         if mid_value <= 0:
             try:
                 bid, ask = await trader.best_bid_ask(market_id)
@@ -1038,7 +1296,7 @@ class BotManager:
                 mid_value = Decimal(0)
 
         position_notional = abs(pos_base * mid_value) if mid_value > 0 else Decimal(0)
-        open_orders = int(status.existing or 0)
+        open_orders = self.sim_open_orders(symbol) if simulate else int(status.existing or 0)
         reduce_mode = bool(status.reduce_mode)
 
         return {

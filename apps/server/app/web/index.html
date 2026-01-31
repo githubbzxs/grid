@@ -233,6 +233,21 @@
 
           <div class="row" style="margin-top: 10px">
             <div>
+              <label>模拟成交</label>
+              <select id="runtime-simulate-fill">
+                <option value="false">关闭</option>
+                <option value="true">开启（价格触线成交）</option>
+              </select>
+              <div class="hint">仅在“模拟（不下单）”时生效。</div>
+            </div>
+            <div>
+              <label>成交判定</label>
+              <div class="hint">价格触达挂单线即视为成交。</div>
+            </div>
+          </div>
+
+          <div class="row" style="margin-top: 10px">
+            <div>
               <label>自动重连</label>
               <select id="runtime-auto-restart">
                 <option value="true">开启</option>

@@ -64,6 +64,7 @@ const els = {
   stSolReduce: document.getElementById("st-sol-reduce"),
 
   runtimeDryRun: document.getElementById("runtime-dry-run"),
+  runtimeSimulateFill: document.getElementById("runtime-simulate-fill"),
   runtimeInterval: document.getElementById("runtime-interval"),
   runtimeStatusInterval: document.getElementById("runtime-status-interval"),
   runtimeAutoRestart: document.getElementById("runtime-auto-restart"),
@@ -119,6 +120,15 @@ function applyExchangeUI() {
   const isParadex = currentExchange() === "paradex";
   if (els.lighterFields) els.lighterFields.hidden = isParadex;
   if (els.paradexFields) els.paradexFields.hidden = !isParadex;
+}
+
+function syncSimulateFillState() {
+  if (!els.runtimeSimulateFill || !els.runtimeDryRun) return;
+  const dryRun = els.runtimeDryRun.value === "true";
+  els.runtimeSimulateFill.disabled = !dryRun;
+  if (!dryRun) {
+    els.runtimeSimulateFill.value = "false";
+  }
 }
 
 async function apiFetch(path, { method = "GET", body = null } = {}) {
@@ -314,6 +324,11 @@ function fillConfig(cfg) {
 
   const rt = cfg.runtime || {};
   els.runtimeDryRun.value = String(Boolean(rt.dry_run));
+  if (els.runtimeSimulateFill) {
+    const simFill = rt.simulate_fill == null ? false : Boolean(rt.simulate_fill);
+    els.runtimeSimulateFill.value = String(simFill);
+  }
+  syncSimulateFillState();
   els.runtimeInterval.value = rt.loop_interval_ms == null ? "100" : String(rt.loop_interval_ms);
   if (els.runtimeStatusInterval) {
     els.runtimeStatusInterval.value = rt.status_refresh_ms == null ? "1000" : String(rt.status_refresh_ms);
@@ -454,8 +469,11 @@ function marketIdValue(input) {
 }
 
 async function saveStrategies() {
+  const dryRun = els.runtimeDryRun.value === "true";
+  const simulateFill = els.runtimeSimulateFill ? els.runtimeSimulateFill.value === "true" : false;
   const runtime = {
-    dry_run: els.runtimeDryRun.value === "true",
+    dry_run: dryRun,
+    simulate_fill: dryRun && simulateFill,
     loop_interval_ms: Math.floor(numOrZero(els.runtimeInterval.value)),
     status_refresh_ms: Math.floor(numOrZero(els.runtimeStatusInterval ? els.runtimeStatusInterval.value : 0)) || 1000,
     auto_restart: els.runtimeAutoRestart ? els.runtimeAutoRestart.value === "true" : true,
@@ -729,6 +747,11 @@ function wire() {
     els.exName.addEventListener("change", () => {
       lastMarkets = [];
       applyExchangeUI();
+    });
+  }
+  if (els.runtimeDryRun) {
+    els.runtimeDryRun.addEventListener("change", () => {
+      syncSimulateFillState();
     });
   }
   els.btnLogout.addEventListener("click", async () => {

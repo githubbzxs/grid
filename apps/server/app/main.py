@@ -666,6 +666,8 @@ async def runtime_status(
     _: str = Depends(require_auth),
 ) -> Dict[str, Any]:
     config: Dict[str, Any] = request.app.state.config.read()
+    runtime = config.get("runtime", {}) or {}
+    simulate = bool(runtime.get("dry_run", True)) and bool(runtime.get("simulate_fill", False))
     name = _exchange_name(config, exchange)
     bots = request.app.state.bot_manager.snapshot()
     runtime_stats: Dict[str, Any] = request.app.state.runtime_stats
@@ -691,6 +693,80 @@ async def runtime_status(
                 "running": 0,
             },
             "symbols": {},
+        }
+
+    if simulate:
+        totals_profit = Decimal(0)
+        totals_volume = Decimal(0)
+        totals_trades = 0
+        totals_position = Decimal(0)
+        totals_orders = 0
+        reduce_symbols: list[str] = []
+        symbols_data: Dict[str, Any] = {}
+        bot_manager = request.app.state.bot_manager
+
+        for symbol in sorted(running_symbols):
+            status = bots.get(symbol) or {}
+            if not isinstance(status, dict):
+                continue
+            started_at = status.get("started_at")
+            start_ms = _parse_iso_ms(started_at) or now_ms
+            entry = runtime_stats.get(symbol)
+            if not isinstance(entry, dict) or entry.get("exchange") != name:
+                entry = {"exchange": name, "start_ms": start_ms, "base_pnl": None}
+                runtime_stats[symbol] = entry
+            if entry.get("start_ms") is None:
+                entry["start_ms"] = start_ms
+            start_ms = int(entry.get("start_ms") or start_ms)
+
+            mid_value = _safe_decimal(status.get("mid") or 0)
+            if mid_value <= 0:
+                mid_value = bot_manager.sim_last_mid(symbol)
+
+            sim_pnl = bot_manager.sim_pnl(symbol, mid_value)
+            if entry.get("base_pnl") is None:
+                entry["base_pnl"] = sim_pnl
+            profit = sim_pnl - _safe_decimal(entry.get("base_pnl") or 0)
+
+            volume, trade_count = bot_manager.sim_trade_stats(symbol, start_ms, now_ms)
+            pos_base = bot_manager.sim_position_base(symbol)
+            position_notional = abs(pos_base * mid_value) if mid_value > 0 else Decimal(0)
+            open_orders = bot_manager.sim_open_orders(symbol)
+            reduce_mode = bool(status.get("reduce_mode"))
+            if reduce_mode:
+                reduce_symbols.append(symbol)
+
+            symbols_data[symbol] = {
+                "symbol": symbol,
+                "market_id": status.get("market_id"),
+                "started_at": started_at,
+                "profit": _fmt_decimal(profit),
+                "volume": _fmt_decimal(volume),
+                "trade_count": trade_count,
+                "position_notional": _fmt_decimal(position_notional),
+                "open_orders": open_orders,
+                "reduce_mode": reduce_mode,
+            }
+
+            totals_profit += profit
+            totals_volume += volume
+            totals_trades += trade_count
+            totals_position += position_notional
+            totals_orders += open_orders
+
+        return {
+            "exchange": name,
+            "updated_at": updated_at,
+            "totals": {
+                "profit": _fmt_decimal(totals_profit),
+                "volume": _fmt_decimal(totals_volume),
+                "trade_count": totals_trades,
+                "position_notional": _fmt_decimal(totals_position),
+                "open_orders": totals_orders,
+                "reduce_symbols": reduce_symbols,
+                "running": len(symbols_data),
+            },
+            "symbols": symbols_data,
         }
 
     try:
@@ -881,11 +957,18 @@ async def exchange_active_orders(
 ) -> Dict[str, Any]:
     symbol = symbol.upper()
     config: Dict[str, Any] = request.app.state.config.read()
+    runtime = config.get("runtime", {}) or {}
+    simulate = bool(runtime.get("dry_run", True)) and bool(runtime.get("simulate_fill", False))
     name = _exchange_name(config, exchange)
     strat = (config.get("strategies", {}) or {}).get(symbol, {}) or {}
     market_id = strat.get("market_id")
     if market_id is None or (isinstance(market_id, str) and not market_id.strip()):
         raise HTTPException(status_code=400, detail="未配置 market_id")
+
+    if simulate:
+        orders = request.app.state.bot_manager.sim_orders(symbol)
+        items = [_order_to_dict(o) for o in orders]
+        return {"exchange": name, "symbol": symbol, "market_id": market_id, "orders": items}
 
     trader = await _ensure_trader(request, name)
     orders = await trader.active_orders(market_id)
