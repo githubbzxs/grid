@@ -77,8 +77,6 @@ WebUI 使用步骤（建议先模拟）
 自动提交（可选）
 -------------
 
-- 启用提交信息校验（Angular 规范）：
-  - `powershell -ExecutionPolicy Bypass -File scripts/setup-hooks.ps1`
 - 自动提交脚本：
   - `powershell -ExecutionPolicy Bypass -File scripts/auto-commit.ps1 -m "chore: auto commit"`
 
