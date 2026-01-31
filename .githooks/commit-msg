@@ -1,0 +1,62 @@
+﻿#!/usr/bin/env sh
+set -eu
+
+# 读取第一行有效提交信息（跳过注释与空行）
+msg_file="$1"
+first_line=""
+while IFS= read -r line || [ -n "$line" ]; do
+  case "$line" in
+    \#*) continue ;;
+  esac
+  trimmed=$(printf '%s' "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  [ -z "$trimmed" ] && continue
+  first_line="$trimmed"
+  break
+done < "$msg_file"
+
+if [ -z "$first_line" ]; then
+  echo "提交信息为空，请按 Angular Commit 规范填写。" >&2
+  exit 1
+fi
+
+# 合并/回滚提交由 Git 自动生成，跳过校验
+case "$first_line" in
+  "Merge "*|"Revert "*)
+    exit 0
+    ;;
+esac
+
+types="feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert"
+regex="^($types)(\\([a-z0-9][a-z0-9._/-]*\\))?(!)?: .{1,72}$"
+
+if ! printf '%s' "$first_line" | grep -Eq "$regex"; then
+  cat >&2 <<'EOF'
+提交信息不符合 Angular Commit 规范。
+
+允许格式：
+  type(scope)!: subject
+  type!: subject
+  type(scope): subject
+  type: subject
+
+规则：
+- type 只能是：feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert
+- scope 可选，建议小写，允许字母/数字/.-/_ 组合
+- subject 1-72 字符，且不以句号结尾
+- Merge/Revert 开头的自动提交跳过校验
+
+示例：
+  feat(grid): 支持批量撤单
+  fix: 修复价格精度溢出
+  docs(readme): 更新部署说明
+  refactor(core)!: 重构订单撮合
+EOF
+  exit 1
+fi
+
+if printf '%s' "$first_line" | grep -Eq '\\.$'; then
+  echo "提交信息的 subject 不应以句号结尾。" >&2
+  exit 1
+fi
+
+exit 0
