@@ -7,10 +7,7 @@
 
 **当前阶段**: [ 🚧 开发中 ]
 **当前任务**:
-- [x] 修复 README/PLAN 的 UTF-8 编码显示问题（已添加 BOM）
-- [x] 同步远程仓库提交（git push）
-- [x] 检查 memory.md 规则/格式要求并指出更新点
-- [x] 提供 Kanagawa Wave 主题色变量映射建议（未改文件）
+- [x] 将 WebUI 主题改为 Kanagawa Wave 配色（更新样式变量与背景）
 
 **下一步计划**:
 - [ ] 等待新的需求指令
@@ -46,6 +43,7 @@
 ## 4. 📝 Key Decisions Log (关键决策记录)
 
 - **[2026-01-31]**: 建立 `memory.md` 作为项目记忆库。
+- **[2026-02-01]**: WebUI 采用 Kanagawa Wave 配色方案。
 
 ## 5. ⚠️ Known Issues & Constraints (已知问题与约束)
 
@@ -61,4 +59,4 @@
 
 ---
 
-**Last Updated**: 2026-02-01 00:04
+**Last Updated**: 2026-02-01 00:06
