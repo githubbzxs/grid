@@ -8,41 +8,29 @@
   </head>
   <body>
     <div class="wrap">
-      <div class="topbar">
+      <header class="topnav">
         <div class="brand">Grid</div>
-        <div class="pill">
-          <span class="dot" id="dot-auth"></span>
-          <span id="pill-text">初始化中</span>
-        </div>
-        <div class="btns" id="top-actions" style="margin: 0">
+        <nav class="nav-links">
+          <a href="#section-exchange">交易所配置</a>
+          <a href="#section-strategy">策略配置</a>
+          <a href="#section-runtime">运行控制</a>
+          <a href="#section-metrics">运行统计</a>
+          <a href="#section-history">历史记录</a>
+          <a href="#section-account">账户与挂单</a>
+          <a href="#section-logs">日志</a>
+        </nav>
+        <div class="top-actions">
+          <div class="pill">
+            <span class="dot" id="dot-auth"></span>
+            <span id="pill-text">初始化中</span>
+          </div>
           <button id="btn-lock">锁定</button>
           <button id="btn-logout">退出</button>
         </div>
-      </div>
-
-      <div class="card" id="auth-card">
-        <h2>登录与初始化</h2>
-        <div class="row">
-          <div>
-            <label>管理员密码</label>
-            <input id="password" type="password" placeholder="至少 8 位" />
-            <div class="hint">
-              公网部署强烈建议使用长密码。程序会用该密码派生密钥，用于加密保存 API 私钥。
-            </div>
-            <div class="btns">
-              <button class="primary" id="btn-setup">首次初始化</button>
-              <button id="btn-login">登录解锁</button>
-            </div>
-          </div>
-          <div>
-            <label>当前状态</label>
-            <div class="hint mono" id="auth-status">加载中…</div>
-          </div>
-        </div>
-      </div>
+      </header>
 
       <div class="grid" id="app-area" hidden>
-        <div class="card">
+        <div class="card section" id="section-exchange">
           <h2>交易所配置</h2>
           <div class="row">
             <div>
@@ -150,7 +138,7 @@
           </div>
         </div>
 
-        <div class="card">
+        <div class="card section" id="section-strategy">
           <h2>策略配置（无限网格）</h2>
           <div class="hint">先从“perp 市场列表”里找到 market_id（Lighter 为数字，Paradex 为市场符号），然后填到对应标的。</div>
           <table class="table">
@@ -291,7 +279,7 @@
           </div>
         </div>
 
-        <div class="card">
+        <div class="card section" id="section-runtime">
           <h2>运行与状态</h2>
           <div class="btns">
             <button class="primary" id="btn-start-all">启动 BTC/ETH/SOL</button>
@@ -317,7 +305,7 @@
           </table>
         </div>
 
-        <div class="card">
+        <div class="card section" id="section-metrics">
           <h2>策略运行状态</h2>
           <div class="stats-grid">
             <div class="stat-card primary">
@@ -377,7 +365,7 @@
           </table>
         </div>
 
-        <div class="card">
+        <div class="card section" id="section-history">
           <h2>历史记录</h2>
           <div class="row">
             <div>
@@ -408,7 +396,7 @@
           </table>
         </div>
 
-        <div class="card">
+        <div class="card section" id="section-account">
           <h2>账户与挂单</h2>
           <div class="row">
             <div>
@@ -443,7 +431,7 @@
           </div>
         </div>
 
-        <div class="card">
+        <div class="card section" id="section-logs">
           <h2>日志</h2>
           <div class="logs mono" id="logs"></div>
         </div>

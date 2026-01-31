@@ -1,0 +1,40 @@
+﻿<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Grid - 登录</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <div class="wrap login-wrap">
+      <header class="login-header">
+        <div class="brand">Grid</div>
+        <div class="pill">
+          <span class="dot" id="dot-auth"></span>
+          <span id="pill-text">初始化中</span>
+        </div>
+      </header>
+
+      <div class="card login-card">
+        <h2>登录</h2>
+        <div class="row">
+          <div>
+            <label>管理员密码</label>
+            <input id="password" type="password" placeholder="至少 8 位" />
+            <div class="hint">首次使用将自动完成初始化并解锁。</div>
+            <div class="btns">
+              <button class="primary" id="btn-login">登录 / 初始化</button>
+            </div>
+          </div>
+          <div>
+            <label>当前状态</label>
+            <div class="hint mono" id="auth-status">加载中…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="/static/login.js"></script>
+  </body>
+</html>

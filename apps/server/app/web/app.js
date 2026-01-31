@@ -1,11 +1,6 @@
 const els = {
   dotAuth: document.getElementById("dot-auth"),
   pillText: document.getElementById("pill-text"),
-  authCard: document.getElementById("auth-card"),
-  authStatus: document.getElementById("auth-status"),
-  password: document.getElementById("password"),
-  btnSetup: document.getElementById("btn-setup"),
-  btnLogin: document.getElementById("btn-login"),
   btnLogout: document.getElementById("btn-logout"),
   btnLock: document.getElementById("btn-lock"),
   appArea: document.getElementById("app-area"),
@@ -152,11 +147,19 @@ function setPill(ok, text) {
 }
 
 function setAuthCardInfo(text) {
-  els.authStatus.textContent = text;
+  if (els.authStatus) {
+    els.authStatus.textContent = text;
+  }
 }
 
 function showApp(show) {
   els.appArea.hidden = !show;
+}
+
+function redirectToLogin() {
+  if (window.location.pathname !== "/login") {
+    window.location.href = "/login";
+  }
 }
 
 function appendLog(line) {
@@ -190,6 +193,7 @@ async function refreshAuth() {
         clearInterval(runtimeTimer);
         runtimeTimer = null;
       }
+      redirectToLogin();
       return;
     }
     if (!authState.authenticated) {
@@ -199,6 +203,7 @@ async function refreshAuth() {
         clearInterval(runtimeTimer);
         runtimeTimer = null;
       }
+      redirectToLogin();
       return;
     }
     if (!authState.unlocked) {
@@ -208,6 +213,7 @@ async function refreshAuth() {
         clearInterval(runtimeTimer);
         runtimeTimer = null;
       }
+      redirectToLogin();
       return;
     }
     setPill(true, "已解锁");
@@ -224,19 +230,7 @@ async function refreshAuth() {
   }
 }
 
-async function setup() {
-  const password = els.password.value || "";
-  await apiFetch("/api/auth/setup", { method: "POST", body: { password } });
-  els.password.value = "";
-  await refreshAuth();
-}
 
-async function login() {
-  const password = els.password.value || "";
-  await apiFetch("/api/auth/login", { method: "POST", body: { password } });
-  els.password.value = "";
-  await refreshAuth();
-}
 
 async function logout() {
   await apiFetch("/api/auth/logout", { method: "POST" });
@@ -697,20 +691,6 @@ function wire() {
       applyExchangeUI();
     });
   }
-  els.btnSetup.addEventListener("click", async () => {
-    try {
-      await setup();
-    } catch (e) {
-      alert(e.message);
-    }
-  });
-  els.btnLogin.addEventListener("click", async () => {
-    try {
-      await login();
-    } catch (e) {
-      alert(e.message);
-    }
-  });
   els.btnLogout.addEventListener("click", async () => {
     try {
       await logout();

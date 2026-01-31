@@ -377,6 +377,11 @@ async def index() -> FileResponse:
     return FileResponse(str(WEB_DIR / "index.html"))
 
 
+@app.get("/login")
+async def login_page() -> FileResponse:
+    return FileResponse(str(WEB_DIR / "login.html"))
+
+
 @app.get("/api/health")
 async def health() -> Dict[str, Any]:
     return {"ok": True}

@@ -41,12 +41,76 @@ body {
   padding: 24px 16px 48px;
 }
 
-.topbar {
+.topnav {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(31, 31, 40, 0.9);
+  backdrop-filter: blur(14px);
+}
+
+.nav-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 1;
+}
+
+.nav-links a {
+  text-decoration: none;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.nav-links a:hover {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.top-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.top-actions button {
+  padding: 8px 10px;
+}
+
+.section {
+  scroll-margin-top: 90px;
+}
+
+.login-wrap {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.login-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 16px;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 760px;
+  margin: 40px auto 0;
 }
 
 .brand {
@@ -75,6 +139,17 @@ body {
 @media (min-width: 900px) {
   .grid {
     grid-template-columns: 1.1fr 0.9fr;
+  }
+}
+
+@media (max-width: 900px) {
+  .topnav {
+    align-items: flex-start;
+  }
+
+  .top-actions {
+    width: 100%;
+    justify-content: space-between;
   }
 }
 
