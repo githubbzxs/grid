@@ -7,13 +7,11 @@
 
 **当前阶段**: [ 🚧 开发中 ]
 **当前任务**:
-- [x] 确认远程仓库地址为 https://github.com/githubbzxs/grid
-- [x] 检查当前 git 状态（main 已领先 origin 5 个提交，工作区干净）
-- [ ] 等待用户确认是否执行 `git push`
+- [x] 修复 README/PLAN 的 UTF-8 编码显示问题（已添加 BOM）
+- [x] 同步远程仓库提交（git push）
 
 **下一步计划**:
-- [ ] 如需同步远程，执行 `git push`
-- [ ] 处理 README/PLAN 中文乱码的编码问题
+- [ ] 等待新的需求指令
 
 ## 2. 🛠 Tech Stack & Config (技术栈与配置)
 
@@ -49,7 +47,6 @@
 
 ## 5. ⚠️ Known Issues & Constraints (已知问题与约束)
 
-- README.md 与 PLAN.md 中文显示存在乱码（疑似编码不一致）。
 - 测试/CI 流程尚未确认。
 
 ## 6. 🎨 User Preferences (用户偏好)
@@ -62,4 +59,4 @@
 
 ---
 
-**Last Updated**: 2026-01-31 23:46
+**Last Updated**: 2026-01-31 23:48
