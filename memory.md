@@ -1,68 +1,49 @@
-﻿# 🧠 Project Memory (项目记忆库)
+﻿# 馃 Project Memory (椤圭洰璁板繂搴?
 
-> 注意：此文件由 Agent 自动维护。每次会话结束或重要变更后必须更新。
-> 目的：作为项目的长期记忆，确保上下文在不同会话和 Sub-Agents 之间无损传递。
+> 娉ㄦ剰锛氭鏂囦欢鐢?Agent 鑷姩缁存姢銆傛瘡娆′細璇濈粨鏉熸垨閲嶈鍙樻洿鍚庡繀椤绘洿鏂般€?> 鐩殑锛氫綔涓洪」鐩殑闀挎湡璁板繂锛岀‘淇濅笂涓嬫枃鍦ㄤ笉鍚屼細璇濆拰 Sub-Agents 涔嬮棿鏃犳崯浼犻€掋€?
+## 1. 馃搷 Current Status (褰撳墠鐘舵€?
 
-## 1. 📍 Current Status (当前状态)
+**褰撳墠闃舵**: [ 馃摑 瑙勫垝涓?]
+**褰撳墠浠诲姟**:
+- [ ] 杩滅▼鏈嶅姟鍣ㄩ噸鏂伴儴缃诧紙绛夊緟閮ㄧ讲鏂瑰紡/璁块棶鏉冮檺/鐩爣鐗堟湰淇℃伅锛?
+**涓嬩竴姝ヨ鍒?*:
+- [ ] 鑾峰彇 SSH 鍦板潃/璐﹀彿鎴栭潰鏉挎柟寮?- [ ] 纭閮ㄧ讲鏂瑰紡锛堣剼鏈?瀹瑰櫒/鎵嬪姩锛変笌鐩爣鍒嗘敮鎴栨彁浜?
+## 2. 馃洜 Tech Stack & Config (鎶€鏈爤涓庨厤缃?
 
-**当前阶段**: [ 📝 规划中 ]
-**当前任务**:
-- [ ] 等待远程服务器连接信息，用于启动服务。
-
-**下一步计划**:
-- [ ] 获取 SSH 连接信息与项目路径后执行远程启动。
-
-## 2. 🛠 Tech Stack & Config (技术栈与配置)
-
-| 类别 | 选型/版本 | 备注 |
+| 绫诲埆 | 閫夊瀷/鐗堟湰 | 澶囨敞 |
 | --- | --- | --- |
-| **Language** | Python 3.11+ | FastAPI 运行环境 |
-| **Framework** | FastAPI + Uvicorn | API 与 WebUI 服务 |
-| **Crypto** | cryptography | 密钥加解密 |
-| **SDK** | lighter-python / paradex-py / grvt-pysdk | 交易所 SDK |
-| **Storage** | JSON 文件 | `data/config.json`、`data/runtime_history.jsonl` |
+| **Language** | Python 3.11+ | FastAPI 鏈嶅姟绔?|
+| **Framework** | FastAPI + Uvicorn | API + WebUI |
+| **Crypto** | cryptography | 瀵嗛挜鍔犺В瀵?|
+| **SDK** | lighter-python / paradex-py / grvt-pysdk | 浜ゆ槗鎵€ SDK |
+| **Storage** | JSON 鏂囦欢 | `data/config.json`銆乣data/runtime_history.jsonl` |
 
-**关键环境配置**:
+**鍏抽敭鐜閰嶇疆**:
 - Python Version: >= 3.11
-- 默认端口: 9999（本地 127.0.0.1）
-- 环境变量: `GRID_HOST`、`GRID_PORT`、`GRID_DATA_DIR`
-- 运行参数: `runtime.simulate_fill`（仅模拟模式生效）
+- 榛樿绔彛: 9999锛堢洃鍚?127.0.0.1锛?- 鐜鍙橀噺: `GRID_HOST`銆乣GRID_PORT`銆乣GRID_DATA_DIR`
+- 杩愯鍙傛暟: `runtime.simulate_fill`锛堟ā鎷熸ā寮忓紑鍏筹級
 
-## 3. 🏗 Architecture & Patterns (架构与模式)
+## 3. 馃彈 Architecture & Patterns (鏋舵瀯涓庢ā寮?
 
-**目录结构规范**:
-- `apps/server/app`: FastAPI 后端与业务逻辑
-- `apps/server/app/web`: 静态 WebUI
-- `apps/server/app/exchanges`: 交易所适配（Lighter / Paradex / GRVT）
-- `apps/server/app/strategies`: 网格策略实现
-- `scripts`: 启动与更新脚本
+**鐩綍缁撴瀯瑙勮寖**:
+- `apps/server/app`: FastAPI 涓绘湇鍔′笌涓氬姟閫昏緫
+- `apps/server/app/web`: 闈欐€?WebUI
+- `apps/server/app/exchanges`: 浜ゆ槗鎵€閫傞厤锛圠ighter / Paradex / GRVT锛?- `apps/server/app/strategies`: 绛栫暐瀹炵幇
+- `scripts`: 閮ㄧ讲涓庣淮鎶よ剼鏈?
+**鏍稿績璁捐妯″紡**:
+- 浣跨敤 `app/core/config_store` 缁熶竴璇诲啓閰嶇疆
+- 浜ゆ槗鎵€閫傞厤鍣ㄥ垎灞傜粍缁?- AS 绛栫暐閫氳繃杩愯鏃堕厤缃枃浠惰瀵熷苟椹卞姩鏇存柊閫昏緫
 
-**核心设计模式**:
-- 配置由 `app/core/config_store` 统一读写。
-- 交易所适配与策略实现分层组织。
-- AS 网格通过运行时计算中心价与价差，兼容现有网格下单逻辑。
+## 4. 馃摑 Key Decisions Log (鍏抽敭鍐崇瓥璁板綍)
 
-## 4. 📝 Key Decisions Log (关键决策记录)
+- **[2026-02-01]**: GRVT 鎺ュ叆浣跨敤 SDK锛學S 涓嬪崟浣跨敤 SDK 鍐呮柟娉曘€?- **[2026-02-01]**: 璧勯噾鍒掕浆鏀逛负瀹屾暣鍒掕浆涓庝綑棰濇娴嬩紭鍏堛€?- **[2026-02-01]**: 淇 AS 绛栫暐妯″紡骞朵繚鐣?Avellaneda-Stoikov 閰嶇疆瑙傚療銆?- **[2026-02-01]**: Lighter 鐨?OrderApi.trades limit 鍥哄畾涓?100銆?- **[2026-02-01]**: WebUI 澧炲姞 AS 绛栫暐璇存槑鏂囨銆?
+## 5. 鈿狅笍 Known Issues & Constraints (宸茬煡闂涓庣害鏉?
 
-- **[2026-02-01]**: GRVT 行情使用 WS、下单使用 SDK，策略区增加交易所限制提示。
-- **[2026-02-01]**: 网格补单策略改为优先补中心附近档位。
-- **[2026-02-01]**: 新增 AS 网格模式，基于 Avellaneda-Stoikov 计算中心价与价差。
-- **[2026-02-01]**: Lighter 的 OrderApi.trades limit 固定为 100。
-- **[2026-02-01]**: WebUI 增加 AS 参数输入与说明。
+- 鏆傛棤宸茬煡闂銆?
+## 6. 馃帹 User Preferences (鐢ㄦ埛鍋忓ソ)
 
-## 5. ⚠️ Known Issues & Constraints (已知问题与约束)
-
-- 暂无新增已知问题。
-
-## 6. 🎨 User Preferences (用户偏好)
-
-- 所有自然语言回复使用中文。
-- 注释与文档必须使用中文，统一 UTF-8 编码。
-- 遵循 KISS 与 SOLID。
-- 发现缺陷优先修复，再扩展新功能。
-- 禁止 MVP 或占位实现，要求完整具体实现。
-- 改动后自动提交并推送远端仓库。
-
+- 鎵€鏈夎嚜鐒惰瑷€鍥炲浣跨敤涓枃銆?- 娉ㄩ噴涓庢枃妗ｅ繀椤讳娇鐢ㄤ腑鏂囷紝缁熶竴 UTF-8 缂栫爜銆?- 閬靛惊 KISS 涓?SOLID銆?- 鍙戠幇缂洪櫡浼樺厛淇鍐嶆墿灞曘€?- 绂佹 MVP 鎴栧崰浣嶅疄鐜般€?- 鏈夋敼鍔ㄩ渶鑷姩鎻愪氦骞舵帹閫佽繙绔粨搴撱€?
 ---
 
-**Last Updated**: 2026-02-01 20:10
+**Last Updated**: 2026-02-01 20:54
+
