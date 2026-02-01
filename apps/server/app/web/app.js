@@ -1,6 +1,4 @@
 const els = {
-  dotAuth: document.getElementById("dot-auth"),
-  pillText: document.getElementById("pill-text"),
   btnLogout: document.getElementById("btn-logout"),
   btnLock: document.getElementById("btn-lock"),
   appArea: document.getElementById("app-area"),
@@ -333,12 +331,6 @@ async function apiFetch(path, { method = "GET", body = null } = {}) {
   return json;
 }
 
-function setPill(ok, text) {
-  els.dotAuth.classList.remove("ok", "bad");
-  els.dotAuth.classList.add(ok ? "ok" : "bad");
-  els.pillText.textContent = text;
-}
-
 function setAuthCardInfo(text) {
   if (els.authStatus) {
     els.authStatus.textContent = text;
@@ -417,7 +409,6 @@ async function refreshAuth() {
     const s = `setup_required=${authState.setup_required} authenticated=${authState.authenticated} unlocked=${authState.unlocked}`;
     setAuthCardInfo(s);
     if (authState.setup_required) {
-      setPill(false, "需要初始化");
       showApp(false);
       if (runtimeTimer) {
         clearInterval(runtimeTimer);
@@ -427,7 +418,6 @@ async function refreshAuth() {
       return;
     }
     if (!authState.authenticated) {
-      setPill(false, "未登录");
       showApp(false);
       if (runtimeTimer) {
         clearInterval(runtimeTimer);
@@ -437,7 +427,6 @@ async function refreshAuth() {
       return;
     }
     if (!authState.unlocked) {
-      setPill(false, "已登录但未解锁");
       showApp(false);
       if (runtimeTimer) {
         clearInterval(runtimeTimer);
@@ -446,7 +435,6 @@ async function refreshAuth() {
       redirectToLogin();
       return;
     }
-    setPill(true, "已解锁");
     showApp(true);
     startLogStream();
     await loadConfig();
@@ -455,7 +443,6 @@ async function refreshAuth() {
     await refreshHistory();
     startRuntimeLoop();
   } catch (e) {
-    setPill(false, `错误：${e.message}`);
     showApp(false);
   }
 }
