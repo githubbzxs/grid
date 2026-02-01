@@ -133,6 +133,12 @@
           <div class="hint">
             先从“perp 市场列表”里找到 market_id。Lighter 使用数字 market_id，Paradex/GRVT 使用 instrument 字符串，点击获取市场列表会自动填充。
           </div>
+          <div class="hint">
+            网格模式说明：动态网格使用固定价差；AS 网格使用 Avellaneda-Stoikov 做市模型。AS 参数含义：as_gamma 风险厌恶系数，越大越保守；as_k 深度系数，反映流动性与撮合强度；as_tau_seconds 时间尺度（秒）；as_vol_points 波动率采样点数；as_max_step_multiplier 价差上限倍数。
+          </div>
+          <div class="hint">
+            网格模式说明：动态网格使用固定价差；AS 网格使用 Avellaneda-Stoikov 做市模型。AS 参数含义：as_gamma 风险厌恶系数，越大越保守；as_k 深度系数，反映流动性与撮合强度；as_tau_seconds 时间尺度（秒）；as_vol_points 波动率采样点数；as_max_step_multiplier 价差上限倍数。
+          </div>
           <div class="hint" id="exchange-limit-hint"></div>
           <table class="table responsive" id="strategy-table">
             <thead>
@@ -143,6 +149,11 @@
                 <th>交易所限制</th>
                 <th>网格模式</th>
                 <th>价差</th>
+                <th>ASγ</th>
+                <th>AS-k</th>
+                <th>AS-τ(s)</th>
+                <th>AS-σ采样</th>
+                <th>AS 价差倍数</th>
                 <th>上层</th>
                 <th>下层</th>
                 <th>每单模式</th>

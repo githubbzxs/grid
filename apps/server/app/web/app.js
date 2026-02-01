@@ -175,6 +175,11 @@ function strategyDefaults() {
     market_id: null,
     grid_mode: "dynamic",
     grid_step: 0,
+    as_gamma: 0.1,
+    as_k: 1.5,
+    as_tau_seconds: 30,
+    as_vol_points: 60,
+    as_max_step_multiplier: 10,
     levels_up: 10,
     levels_down: 10,
     order_size_mode: "notional",
@@ -223,6 +228,11 @@ function strategyRowTemplate(strategy) {
   const market = escapeHtml(valueText(strategy.market_id));
   const gridMode = strategy.grid_mode === "as" ? "as" : "dynamic";
   const step = escapeHtml(valueText(strategy.grid_step));
+  const asGamma = escapeHtml(valueText(strategy.as_gamma));
+  const asK = escapeHtml(valueText(strategy.as_k));
+  const asTau = escapeHtml(valueText(strategy.as_tau_seconds));
+  const asVol = escapeHtml(valueText(strategy.as_vol_points));
+  const asStepMult = escapeHtml(valueText(strategy.as_max_step_multiplier));
   const up = escapeHtml(valueText(strategy.levels_up));
   const down = escapeHtml(valueText(strategy.levels_down));
   const size = escapeHtml(valueText(strategy.order_size_value));
@@ -242,6 +252,11 @@ function strategyRowTemplate(strategy) {
       </select>
     </td>
     <td data-label="价差"><input class="st-step" placeholder="例如 5" value="${step}" /></td>
+    <td data-label="ASγ"><input class="st-as-gamma" placeholder="默认 0.1" value="${asGamma}" /></td>
+    <td data-label="AS-k"><input class="st-as-k" placeholder="默认 1.5" value="${asK}" /></td>
+    <td data-label="AS-τ(s)"><input class="st-as-tau" placeholder="默认 30" value="${asTau}" /></td>
+    <td data-label="AS-σ采样"><input class="st-as-vol" placeholder="默认 60" value="${asVol}" /></td>
+    <td data-label="AS 价差倍数"><input class="st-as-step-mult" placeholder="默认 10" value="${asStepMult}" /></td>
     <td data-label="上层"><input class="st-up" placeholder="10" value="${up}" /></td>
     <td data-label="下层"><input class="st-down" placeholder="10" value="${down}" /></td>
     <td data-label="每单模式">
@@ -325,6 +340,11 @@ function collectStrategiesFromTable() {
       market_id: marketIdValue(row.querySelector(".st-market")),
       grid_mode: row.querySelector(".st-grid-mode")?.value || "dynamic",
       grid_step: numOrZero(row.querySelector(".st-step")?.value),
+      as_gamma: numOrZero(row.querySelector(".st-as-gamma")?.value),
+      as_k: numOrZero(row.querySelector(".st-as-k")?.value),
+      as_tau_seconds: numOrZero(row.querySelector(".st-as-tau")?.value),
+      as_vol_points: Math.floor(numOrZero(row.querySelector(".st-as-vol")?.value)),
+      as_max_step_multiplier: numOrZero(row.querySelector(".st-as-step-mult")?.value),
       levels_up: Math.floor(numOrZero(row.querySelector(".st-up")?.value)),
       levels_down: Math.floor(numOrZero(row.querySelector(".st-down")?.value)),
       order_size_mode: row.querySelector(".st-mode")?.value || "notional",

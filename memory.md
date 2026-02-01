@@ -9,7 +9,7 @@
 **当前任务**:
 - [x] 修复 Lighter 的 OrderApi.trades limit 规则（强制 100）。
 - [x] 新增 AS 网格模式（Avellaneda-Stoikov）与前端模式选择。
-- [x] README 补充 AS 网格参数说明。
+- [x] WebUI 支持 AS 参数配置并解释参数含义。
 
 **下一步计划**:
 - [ ] 如需更细化 AS 参数控制，可扩展 WebUI 输入项。
@@ -50,6 +50,7 @@
 - **[2026-02-01]**: 网格补单策略改为优先补中心附近档位。
 - **[2026-02-01]**: 新增 AS 网格模式，基于 Avellaneda-Stoikov 计算中心价与价差。
 - **[2026-02-01]**: Lighter 的 OrderApi.trades limit 固定为 100。
+- **[2026-02-01]**: WebUI 增加 AS 参数输入与说明。
 
 ## 5. ⚠️ Known Issues & Constraints (已知问题与约束)
 
@@ -66,4 +67,4 @@
 
 ---
 
-**Last Updated**: 2026-02-01 19:50
+**Last Updated**: 2026-02-01 19:59
