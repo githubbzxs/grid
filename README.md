@@ -58,13 +58,15 @@
 - **market_id 类型**：Lighter 为数字；Paradex / GRVT 为 instrument 字符串。
 - **精度与最小下单量**：以“市场列表”中返回的 `sizeDec / priceDec / minBase / tick` 为准。
 - **GRVT 订单限制**：默认 GTT（GOOD_TILL_TIME），post_only 有效，client_order_id 必须唯一。
-- **网格模式**：`grid_mode=dynamic` 动态网格（默认），`grid_mode=as` 为 AS 网格（Avellaneda-Stoikov）。
+- **网格类型**：动态网格与 AS 网格在 WebUI 中分表配置，后端以 `grid_mode` 区分（`dynamic` / `as`）。
+- **动态参数**：`grid_step` 固定价差。
+- **AS 参数（可选）**：`as_min_step` AS 最小价差（<=0 时自动使用最小价格刻度）。
 - **AS 参数（可选）**：`as_gamma` 风险厌恶系数，默认 0.1。
 - **AS 参数（可选）**：`as_k` 深度系数，默认 1.5。
 - **AS 参数（可选）**：`as_tau_seconds` 时间尺度（秒），默认 30。
 - **AS 参数（可选）**：`as_vol_points` 波动率采样点数，默认 60（最少 5）。
 - **AS 参数（可选）**：`as_max_step_multiplier` 最大价差倍数，默认 10。
-- **AS 价差规则**：AS 网格实际步长取 `max(grid_step, AS 半价差)`，并受 `as_max_step_multiplier` 上限约束。
+- **AS 价差规则**：AS 网格实际步长取 `max(as_min_step, AS 半价差)`，并受 `as_max_step_multiplier` 上限约束（旧配置中的 `grid_step` 仅作为回退）。
 
 ## 7. 更新与部署（Linux）
 

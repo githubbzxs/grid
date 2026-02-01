@@ -34,9 +34,12 @@ const els = {
   marketsOutput: document.getElementById("markets-output"),
   testOutput: document.getElementById("test-output"),
 
-  strategyTable: document.getElementById("strategy-table"),
-  strategyTbody: document.getElementById("strategy-tbody"),
-  btnAddSymbol: document.getElementById("btn-add-symbol"),
+  strategyDynamicTable: document.getElementById("strategy-dynamic-table"),
+  strategyDynamicTbody: document.getElementById("strategy-dynamic-tbody"),
+  strategyAsTable: document.getElementById("strategy-as-table"),
+  strategyAsTbody: document.getElementById("strategy-as-tbody"),
+  btnAddDynamic: document.getElementById("btn-add-dynamic"),
+  btnAddAs: document.getElementById("btn-add-as"),
   btnSaveStrategies: document.getElementById("btn-save-strategies"),
 
   runtimeDryRun: document.getElementById("runtime-dry-run"),
@@ -168,18 +171,11 @@ function normalizeSymbol(value) {
   return String(value || "").trim().toUpperCase();
 }
 
-function strategyDefaults() {
-  return {
+function strategyDefaults(mode = "dynamic") {
+  const base = {
     symbol: "",
     enabled: true,
     market_id: null,
-    grid_mode: "dynamic",
-    grid_step: 0,
-    as_gamma: 0.1,
-    as_k: 1.5,
-    as_tau_seconds: 30,
-    as_vol_points: 60,
-    as_max_step_multiplier: 10,
     levels_up: 10,
     levels_down: 10,
     order_size_mode: "notional",
@@ -189,6 +185,23 @@ function strategyDefaults() {
     reduce_order_size_multiplier: 1,
     post_only: true,
     max_open_orders: 50,
+  };
+  if (mode === "as") {
+    return {
+      ...base,
+      grid_mode: "as",
+      as_min_step: 0,
+      as_gamma: 0.1,
+      as_k: 1.5,
+      as_tau_seconds: 30,
+      as_vol_points: 60,
+      as_max_step_multiplier: 10,
+    };
+  }
+  return {
+    ...base,
+    grid_mode: "dynamic",
+    grid_step: 0,
   };
 }
 
@@ -200,7 +213,11 @@ function normalizeStrategies(raw) {
       if (!item || typeof item !== "object") return;
       const symbol = normalizeSymbol(item.symbol || item.name || item.ticker);
       if (!symbol || seen.has(symbol)) return;
-      const merged = { ...strategyDefaults(), ...item, symbol };
+      const mode = String(item.grid_mode || "").toLowerCase() === "as" ? "as" : "dynamic";
+      const merged = { ...strategyDefaults(mode), ...item, symbol, grid_mode: mode };
+      if (mode === "as" && numOrZero(merged.as_min_step) <= 0) {
+        merged.as_min_step = numOrZero(item.as_min_step ?? item.grid_step ?? 0);
+      }
       list.push(merged);
       seen.add(symbol);
     });
@@ -209,7 +226,11 @@ function normalizeStrategies(raw) {
       const symbol = normalizeSymbol(key);
       if (!symbol || seen.has(symbol)) return;
       const base = value && typeof value === "object" ? value : {};
-      const merged = { ...strategyDefaults(), ...base, symbol };
+      const mode = String(base.grid_mode || "").toLowerCase() === "as" ? "as" : "dynamic";
+      const merged = { ...strategyDefaults(mode), ...base, symbol, grid_mode: mode };
+      if (mode === "as" && numOrZero(merged.as_min_step) <= 0) {
+        merged.as_min_step = numOrZero(base.as_min_step ?? base.grid_step ?? 0);
+      }
       list.push(merged);
       seen.add(symbol);
     });
@@ -222,12 +243,45 @@ function valueText(value) {
   return String(value);
 }
 
-function strategyRowTemplate(strategy) {
+function dynamicStrategyRowTemplate(strategy) {
   const symbol = escapeHtml(strategy.symbol || "");
   const enabled = strategy.enabled ? "checked" : "";
   const market = escapeHtml(valueText(strategy.market_id));
-  const gridMode = strategy.grid_mode === "as" ? "as" : "dynamic";
   const step = escapeHtml(valueText(strategy.grid_step));
+  const up = escapeHtml(valueText(strategy.levels_up));
+  const down = escapeHtml(valueText(strategy.levels_down));
+  const size = escapeHtml(valueText(strategy.order_size_value));
+  const maxpos = escapeHtml(valueText(strategy.max_position_notional));
+  const exitpos = escapeHtml(valueText(strategy.reduce_position_notional));
+  const reduce = escapeHtml(valueText(strategy.reduce_order_size_multiplier));
+  const mode = strategy.order_size_mode === "base" ? "base" : "notional";
+  return `<tr>
+    <td data-label="标的"><input class="st-symbol mono" placeholder="例如 BTC" value="${symbol}" /></td>
+    <td data-label="启用"><input class="st-enabled" type="checkbox" ${enabled} /></td>
+    <td data-label="market_id"><input class="st-market" placeholder="例如 0 或 ETH-USD-PERP" value="${market}" /></td>
+    <td data-label="交易所限制"><div class="st-limit hint">等待 market_id 与市场列表</div></td>
+    <td data-label="价差"><input class="st-step" placeholder="例如 5" value="${step}" /></td>
+    <td data-label="上层"><input class="st-up" placeholder="10" value="${up}" /></td>
+    <td data-label="下层"><input class="st-down" placeholder="10" value="${down}" /></td>
+    <td data-label="每单模式">
+      <select class="st-mode">
+        <option value="notional" ${mode === "notional" ? "selected" : ""}>固定名义金额</option>
+        <option value="base" ${mode === "base" ? "selected" : ""}>固定币数量</option>
+      </select>
+    </td>
+    <td data-label="每单数量"><input class="st-size" placeholder="例如 5" value="${size}" /></td>
+    <td data-label="触发仓位"><input class="st-maxpos" placeholder="例如 100" value="${maxpos}" /></td>
+    <td data-label="退出仓位"><input class="st-exitpos" placeholder="例如 80" value="${exitpos}" /></td>
+    <td data-label="减仓倍数"><input class="st-reduce" placeholder="例如 2" value="${reduce}" /></td>
+    <td data-label="操作"><button class="danger btn-remove-row" type="button">删除</button></td>
+  </tr>`;
+}
+
+function asStrategyRowTemplate(strategy) {
+  const symbol = escapeHtml(strategy.symbol || "");
+  const enabled = strategy.enabled ? "checked" : "";
+  const market = escapeHtml(valueText(strategy.market_id));
+  const minStep = escapeHtml(valueText(strategy.as_min_step));
   const asGamma = escapeHtml(valueText(strategy.as_gamma));
   const asK = escapeHtml(valueText(strategy.as_k));
   const asTau = escapeHtml(valueText(strategy.as_tau_seconds));
@@ -245,13 +299,7 @@ function strategyRowTemplate(strategy) {
     <td data-label="启用"><input class="st-enabled" type="checkbox" ${enabled} /></td>
     <td data-label="market_id"><input class="st-market" placeholder="例如 0 或 ETH-USD-PERP" value="${market}" /></td>
     <td data-label="交易所限制"><div class="st-limit hint">等待 market_id 与市场列表</div></td>
-    <td data-label="网格模式">
-      <select class="st-grid-mode">
-        <option value="dynamic" ${gridMode === "dynamic" ? "selected" : ""}>动态网格</option>
-        <option value="as" ${gridMode === "as" ? "selected" : ""}>AS网格</option>
-      </select>
-    </td>
-    <td data-label="价差"><input class="st-step" placeholder="例如 5" value="${step}" /></td>
+    <td data-label="AS 最小价差"><input class="st-as-min-step" placeholder="例如 1" value="${minStep}" /></td>
     <td data-label="ASγ"><input class="st-as-gamma" placeholder="默认 0.1" value="${asGamma}" /></td>
     <td data-label="AS-k"><input class="st-as-k" placeholder="默认 1.5" value="${asK}" /></td>
     <td data-label="AS-τ(s)"><input class="st-as-tau" placeholder="默认 30" value="${asTau}" /></td>
@@ -265,7 +313,7 @@ function strategyRowTemplate(strategy) {
         <option value="base" ${mode === "base" ? "selected" : ""}>固定币数量</option>
       </select>
     </td>
-    <td data-label="每单数值"><input class="st-size" placeholder="例如 5" value="${size}" /></td>
+    <td data-label="每单数量"><input class="st-size" placeholder="例如 5" value="${size}" /></td>
     <td data-label="触发仓位"><input class="st-maxpos" placeholder="例如 100" value="${maxpos}" /></td>
     <td data-label="退出仓位"><input class="st-exitpos" placeholder="例如 80" value="${exitpos}" /></td>
     <td data-label="减仓倍数"><input class="st-reduce" placeholder="例如 2" value="${reduce}" /></td>
@@ -273,11 +321,13 @@ function strategyRowTemplate(strategy) {
   </tr>`;
 }
 
-function addStrategyRow(strategy) {
-  if (!els.strategyTbody) return;
-  const data = strategy ? { ...strategyDefaults(), ...strategy } : strategyDefaults();
-  els.strategyTbody.insertAdjacentHTML("beforeend", strategyRowTemplate(data));
-  const rows = getStrategyRows();
+function addStrategyRow(strategy, mode = "dynamic") {
+  const tbody = mode === "as" ? els.strategyAsTbody : els.strategyDynamicTbody;
+  if (!tbody) return;
+  const data = strategy ? { ...strategyDefaults(mode), ...strategy } : strategyDefaults(mode);
+  const template = mode === "as" ? asStrategyRowTemplate(data) : dynamicStrategyRowTemplate(data);
+  tbody.insertAdjacentHTML("beforeend", template);
+  const rows = getStrategyRowsByMode(mode);
   const row = rows[rows.length - 1];
   if (row && lastMarkets.length) {
     autoFillMarketIdForRow(row, lastMarkets);
@@ -285,22 +335,41 @@ function addStrategyRow(strategy) {
   refreshStrategyLimits();
 }
 
-function renderStrategies(list) {
-  if (!els.strategyTbody) return;
-  const rows = list && list.length ? list.map((item) => strategyRowTemplate(item)).join("") : "";
-  els.strategyTbody.innerHTML = rows;
+function renderStrategyTable(tbody, list, mode) {
+  if (!tbody) return;
+  const rows = list && list.length ? list.map((item) => (mode === "as" ? asStrategyRowTemplate(item) : dynamicStrategyRowTemplate(item))).join("") : "";
+  tbody.innerHTML = rows;
   if (!rows) {
-    addStrategyRow({ symbol: "" });
+    addStrategyRow({ symbol: "" }, mode);
   }
+}
+
+function renderStrategies(list) {
+  const dynamicList = [];
+  const asList = [];
+  (list || []).forEach((item) => {
+    if (String(item.grid_mode || "").toLowerCase() === "as") {
+      asList.push(item);
+    } else {
+      dynamicList.push(item);
+    }
+  });
+  renderStrategyTable(els.strategyDynamicTbody, dynamicList, "dynamic");
+  renderStrategyTable(els.strategyAsTbody, asList, "as");
   if (lastMarkets.length) {
     autoFillMarketIds(lastMarkets);
   }
   refreshStrategyLimits();
 }
 
-function getStrategyRows() {
-  if (!els.strategyTbody) return [];
-  return Array.from(els.strategyTbody.querySelectorAll("tr"));
+function getStrategyRowsByMode(mode) {
+  const tbody = mode === "as" ? els.strategyAsTbody : els.strategyDynamicTbody;
+  if (!tbody) return [];
+  return Array.from(tbody.querySelectorAll("tr"));
+}
+
+function getAllStrategyRows() {
+  return [...getStrategyRowsByMode("dynamic"), ...getStrategyRowsByMode("as")];
 }
 
 function rowHasValues(row) {
@@ -313,12 +382,11 @@ function rowHasValues(row) {
 }
 
 function collectStrategiesFromTable() {
-  const rows = getStrategyRows();
   const strategies = {};
   const seen = new Set();
   let hasEmptySymbol = false;
 
-  rows.forEach((row) => {
+  function applyRow(row, mode) {
     const symbolInput = row.querySelector(".st-symbol");
     const symbol = normalizeSymbol(symbolInput ? symbolInput.value : "");
     if (!symbol) {
@@ -332,19 +400,12 @@ function collectStrategiesFromTable() {
     }
     seen.add(symbol);
     const existing = currentStrategies.find((item) => item.symbol === symbol) || {};
-    strategies[symbol] = {
-      ...strategyDefaults(),
+    const base = {
+      ...strategyDefaults(mode),
       ...existing,
       symbol,
       enabled: Boolean(row.querySelector(".st-enabled")?.checked),
       market_id: marketIdValue(row.querySelector(".st-market")),
-      grid_mode: row.querySelector(".st-grid-mode")?.value || "dynamic",
-      grid_step: numOrZero(row.querySelector(".st-step")?.value),
-      as_gamma: numOrZero(row.querySelector(".st-as-gamma")?.value),
-      as_k: numOrZero(row.querySelector(".st-as-k")?.value),
-      as_tau_seconds: numOrZero(row.querySelector(".st-as-tau")?.value),
-      as_vol_points: Math.floor(numOrZero(row.querySelector(".st-as-vol")?.value)),
-      as_max_step_multiplier: numOrZero(row.querySelector(".st-as-step-mult")?.value),
       levels_up: Math.floor(numOrZero(row.querySelector(".st-up")?.value)),
       levels_down: Math.floor(numOrZero(row.querySelector(".st-down")?.value)),
       order_size_mode: row.querySelector(".st-mode")?.value || "notional",
@@ -353,7 +414,30 @@ function collectStrategiesFromTable() {
       reduce_position_notional: numOrZero(row.querySelector(".st-exitpos")?.value),
       reduce_order_size_multiplier: numOrZero(row.querySelector(".st-reduce")?.value),
     };
-  });
+
+    if (mode === "as") {
+      strategies[symbol] = {
+        ...base,
+        grid_mode: "as",
+        as_min_step: numOrZero(row.querySelector(".st-as-min-step")?.value),
+        as_gamma: numOrZero(row.querySelector(".st-as-gamma")?.value),
+        as_k: numOrZero(row.querySelector(".st-as-k")?.value),
+        as_tau_seconds: numOrZero(row.querySelector(".st-as-tau")?.value),
+        as_vol_points: Math.floor(numOrZero(row.querySelector(".st-as-vol")?.value)),
+        as_max_step_multiplier: numOrZero(row.querySelector(".st-as-step-mult")?.value),
+      };
+      return;
+    }
+
+    strategies[symbol] = {
+      ...base,
+      grid_mode: "dynamic",
+      grid_step: numOrZero(row.querySelector(".st-step")?.value),
+    };
+  }
+
+  getStrategyRowsByMode("dynamic").forEach((row) => applyRow(row, "dynamic"));
+  getStrategyRowsByMode("as").forEach((row) => applyRow(row, "as"));
 
   if (hasEmptySymbol) {
     throw new Error("存在未填写的币对，请补充或删除。");
@@ -408,7 +492,7 @@ function autoFillMarketIdForRow(row, items, force = false) {
 
 function autoFillMarketIds(items, force = false) {
   if (!items || !items.length) return;
-  getStrategyRows().forEach((row) => autoFillMarketIdForRow(row, items, force));
+  getAllStrategyRows().forEach((row) => autoFillMarketIdForRow(row, items, force));
 }
 
 function marketLimitText(item) {
@@ -441,8 +525,8 @@ function findMarketByRow(row, items) {
 }
 
 function refreshStrategyLimits() {
-  if (!els.strategyTbody) return;
-  const rows = getStrategyRows();
+  if (!els.strategyDynamicTbody && !els.strategyAsTbody) return;
+  const rows = getAllStrategyRows();
   rows.forEach((row) => {
     const holder = row.querySelector(".st-limit");
     if (!holder) return;
@@ -452,7 +536,7 @@ function refreshStrategyLimits() {
 }
 
 function resetMarketIds() {
-  const rows = getStrategyRows();
+  const rows = getAllStrategyRows();
   rows.forEach((row) => {
     const marketInput = row.querySelector(".st-market");
     if (marketInput) marketInput.value = "";
@@ -1092,26 +1176,33 @@ function wire() {
       syncSimulateFillState();
     });
   }
-  if (els.btnAddSymbol) {
-    els.btnAddSymbol.addEventListener("click", () => {
-      addStrategyRow({ symbol: "" });
+  if (els.btnAddDynamic) {
+    els.btnAddDynamic.addEventListener("click", () => {
+      addStrategyRow({ symbol: "" }, "dynamic");
     });
   }
-  if (els.strategyTbody) {
-    els.strategyTbody.addEventListener("click", (event) => {
+  if (els.btnAddAs) {
+    els.btnAddAs.addEventListener("click", () => {
+      addStrategyRow({ symbol: "" }, "as");
+    });
+  }
+
+  function bindStrategyTable(tbody, mode) {
+    if (!tbody) return;
+    tbody.addEventListener("click", (event) => {
       const target = event.target;
       if (!(target instanceof HTMLElement)) return;
       if (target.classList.contains("btn-remove-row")) {
         const row = target.closest("tr");
         if (row) {
           row.remove();
-          if (!getStrategyRows().length) {
-            addStrategyRow({ symbol: "" });
+          if (!getStrategyRowsByMode(mode).length) {
+            addStrategyRow({ symbol: "" }, mode);
           }
         }
       }
     });
-    els.strategyTbody.addEventListener("change", async (event) => {
+    tbody.addEventListener("change", async (event) => {
       const target = event.target;
       if (!(target instanceof HTMLElement)) return;
       if (target.classList.contains("st-symbol")) {
@@ -1123,7 +1214,9 @@ function wire() {
         if (!lastMarkets.length) {
           try {
             await fetchMarkets();
-          } catch {}
+          } catch {
+            return;
+          }
         }
         if (lastMarkets.length) {
           autoFillMarketIdForRow(row, lastMarkets);
@@ -1136,6 +1229,11 @@ function wire() {
       }
     });
   }
+
+  bindStrategyTable(els.strategyDynamicTbody, "dynamic");
+  bindStrategyTable(els.strategyAsTbody, "as");
+
+  els.btnLogout.addEventListener("click", async () => {
   els.btnLogout.addEventListener("click", async () => {
     try {
       await logout();

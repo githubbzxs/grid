@@ -124,6 +124,22 @@ def _as_param_int(strat: Dict[str, Any], key: str, default: int, min_value: int)
     return value
 
 
+def _min_price_step(meta: MarketMeta) -> Decimal:
+    return Decimal(1) / (Decimal(10) ** int(meta.price_decimals))
+
+
+def _as_min_step(strat: Dict[str, Any], meta: MarketMeta) -> Decimal:
+    raw = _safe_decimal(strat.get("as_min_step") or 0)
+    if raw <= 0:
+        raw = _safe_decimal(strat.get("grid_step") or 0)
+    tick = _min_price_step(meta)
+    if raw <= 0:
+        raw = tick
+    if raw < tick:
+        raw = tick
+    return _quantize(raw, meta.price_decimals, ROUND_HALF_UP)
+
+
 def _calc_base_qty(mode: str, value: Decimal, price: Decimal) -> Decimal:
     if mode == "base":
         return value
@@ -621,12 +637,6 @@ class BotManager:
                             f"pnl.init.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}"
                         )
 
-                step = _safe_decimal(strat.get("grid_step") or 0)
-                if step <= 0:
-                    await self._update_status(symbol, running=True, message="grid_step 必须大于 0", last_tick_at=_now_iso(), market_id=market_id)
-                    continue
-                min_step = step
-
                 meta = await trader.market_meta(market_id)
                 bid, ask = await trader.best_bid_ask(market_id)
                 if bid is None or ask is None:
@@ -645,6 +655,30 @@ class BotManager:
                     status = self._status.get(symbol)
                     start_ms = _parse_iso_ms(status.started_at if status else None) or now_ms
                     self._start_ms[symbol] = start_ms
+
+                step_input = _safe_decimal(strat.get("grid_step") or 0)
+                if grid_mode == GRID_MODE_AS:
+                    min_step = _as_min_step(strat, meta)
+                    if min_step <= 0:
+                        await self._update_status(
+                            symbol,
+                            running=True,
+                            message="AS 最小价差必须大于 0",
+                            last_tick_at=_now_iso(),
+                            market_id=market_id,
+                        )
+                        continue
+                else:
+                    if step_input <= 0:
+                        await self._update_status(
+                            symbol,
+                            running=True,
+                            message="grid_step 必须大于 0",
+                            last_tick_at=_now_iso(),
+                            market_id=market_id,
+                        )
+                        continue
+                    min_step = step_input
 
                 stop_signal = bool(self._stop_signal.get(symbol, False))
                 stop_reason = self._stop_reason.get(symbol, "")
