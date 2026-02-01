@@ -196,6 +196,7 @@ function strategyDefaults(mode = "dynamic") {
       as_tau_seconds: 30,
       as_vol_points: 60,
       as_max_step_multiplier: 10,
+      as_max_drawdown: 0,
     };
   }
   return {
@@ -287,6 +288,7 @@ function asStrategyRowTemplate(strategy) {
   const asTau = escapeHtml(valueText(strategy.as_tau_seconds));
   const asVol = escapeHtml(valueText(strategy.as_vol_points));
   const asStepMult = escapeHtml(valueText(strategy.as_max_step_multiplier));
+  const asMaxDrawdown = escapeHtml(valueText(strategy.as_max_drawdown));
   const up = escapeHtml(valueText(strategy.levels_up));
   const down = escapeHtml(valueText(strategy.levels_down));
   const size = escapeHtml(valueText(strategy.order_size_value));
@@ -305,6 +307,7 @@ function asStrategyRowTemplate(strategy) {
     <td data-label="AS-τ(s)"><input class="st-as-tau" placeholder="默认 30" value="${asTau}" /></td>
     <td data-label="AS-σ采样"><input class="st-as-vol" placeholder="默认 60" value="${asVol}" /></td>
     <td data-label="AS 价差倍数"><input class="st-as-step-mult" placeholder="默认 10" value="${asStepMult}" /></td>
+    <td data-label="AS 最大回撤"><input class="st-as-max-dd" placeholder="例如 50" value="${asMaxDrawdown}" /></td>
     <td data-label="上层"><input class="st-up" placeholder="10" value="${up}" /></td>
     <td data-label="下层"><input class="st-down" placeholder="10" value="${down}" /></td>
     <td data-label="每单模式">
@@ -425,6 +428,7 @@ function collectStrategiesFromTable() {
         as_tau_seconds: numOrZero(row.querySelector(".st-as-tau")?.value),
         as_vol_points: Math.floor(numOrZero(row.querySelector(".st-as-vol")?.value)),
         as_max_step_multiplier: numOrZero(row.querySelector(".st-as-step-mult")?.value),
+        as_max_drawdown: numOrZero(row.querySelector(".st-as-max-dd")?.value),
       };
       return;
     }

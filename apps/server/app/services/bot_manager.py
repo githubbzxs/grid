@@ -299,6 +299,7 @@ class BotManager:
         self._stop_check_at: Dict[str, int] = {}
         self._pnl_cache: Dict[str, tuple[int, Decimal]] = {}
         self._base_pnl: Dict[str, Decimal] = {}
+        self._peak_pnl: Dict[str, Decimal] = {}
         self._sim_states: Dict[str, SimState] = {}
         self._mid_history: Dict[str, list[tuple[int, Decimal]]] = {}
         self._history = HistoryStore(self._config.path.parent / "runtime_history.jsonl")
@@ -315,6 +316,7 @@ class BotManager:
                 self._stop_check_at.pop(symbol, None)
                 self._pnl_cache.pop(symbol, None)
                 self._base_pnl.pop(symbol, None)
+                self._peak_pnl.pop(symbol, None)
                 self._sim_reset(symbol)
                 self._history_recorded.discard(symbol)
                 self._start_ms[symbol] = _now_ms()
@@ -345,6 +347,7 @@ class BotManager:
             self._stop_check_at.pop(symbol, None)
             self._pnl_cache.pop(symbol, None)
             self._base_pnl.pop(symbol, None)
+            self._peak_pnl.pop(symbol, None)
             self._history_recorded.discard(symbol)
             self._start_ms.pop(symbol, None)
             restart_task = self._restart_tasks.pop(symbol, None)
@@ -683,15 +686,66 @@ class BotManager:
                 stop_signal = bool(self._stop_signal.get(symbol, False))
                 stop_reason = self._stop_reason.get(symbol, "")
 
-                reduce_mode = self._reduce_mode.get(symbol, False)
+                if grid_mode == GRID_MODE_AS:
+                    max_drawdown = _safe_decimal(strat.get("as_max_drawdown") or 0)
+                    if max_drawdown > 0:
+                        pnl_now = await self._position_pnl(trader, market_id, symbol, simulate=simulate)
+                        if pnl_now is None:
+                            pnl_now = Decimal(0)
+                        base_pnl = self._base_pnl.get(symbol)
+                        if base_pnl is None:
+                            self._base_pnl[symbol] = pnl_now
+                            base_pnl = pnl_now
+                        profit_now = pnl_now - _safe_decimal(base_pnl)
+                        peak = self._peak_pnl.get(symbol)
+                        if peak is None or profit_now > peak:
+                            peak = profit_now
+                            self._peak_pnl[symbol] = peak
+                        drawdown = peak - profit_now
+                        if drawdown >= max_drawdown:
+                            self._stop_signal[symbol] = True
+                            self._stop_reason[symbol] = "最大回撤触发"
+                            await self._cancel_grid_orders(symbol, trader, market_id, simulate=simulate)
+                            await self._record_history(
+                                trader,
+                                [symbol],
+                                "as_drawdown",
+                                f"drawdown={_fmt_decimal(drawdown)}",
+                            )
+                            await self._update_status(
+                                symbol,
+                                running=False,
+                                message="AS 回撤触发紧急停止",
+                                last_tick_at=_now_iso(),
+                                market_id=market_id,
+                                mid=str(mid),
+                                desired=0,
+                                existing=0,
+                                reduce_mode=False,
+                                stop_signal=True,
+                                stop_reason="as_drawdown",
+                            )
+                            self._logbus.publish(
+                                f"as.drawdown.stop symbol={symbol} drawdown={_fmt_decimal(drawdown)} limit={_fmt_decimal(max_drawdown)}"
+                            )
+                            return
+
+                reduce_mode = False
                 reduce_side: Optional[str] = None
                 pos_notional: Optional[Decimal] = None
                 pos_base: Optional[Decimal] = None
                 max_pos = _safe_decimal(strat.get("max_position_notional") or 0)
                 reduce_exit = _safe_decimal(strat.get("reduce_position_notional") or 0)
                 reduce_mult = _safe_decimal(strat.get("reduce_order_size_multiplier") or 1)
-                if reduce_mult < 1:
+                if grid_mode != GRID_MODE_AS:
+                    reduce_mode = self._reduce_mode.get(symbol, False)
+                    if reduce_mult < 1:
+                        reduce_mult = Decimal(1)
+                else:
+                    max_pos = Decimal(0)
+                    reduce_exit = Decimal(0)
                     reduce_mult = Decimal(1)
+                    self._reduce_mode[symbol] = False
 
                 need_position = max_pos > 0 or stop_signal or stop_after_minutes > 0 or stop_after_volume > 0 or grid_mode == GRID_MODE_AS
                 if need_position:
@@ -709,7 +763,7 @@ class BotManager:
                                 f"position.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}"
                             )
 
-                if max_pos > 0 and pos_notional is not None:
+                if grid_mode != GRID_MODE_AS and max_pos > 0 and pos_notional is not None:
                     if reduce_exit <= 0 or reduce_exit >= max_pos:
                         reduce_exit = max_pos * Decimal("0.8")
                     if not reduce_mode and pos_notional >= max_pos:
@@ -852,8 +906,12 @@ class BotManager:
 
                 levels_up = int(strat.get("levels_up") or 0)
                 levels_down = int(strat.get("levels_down") or 0)
-                levels_up = max(0, min(levels_up, MAX_LEVEL_PER_SIDE))
-                levels_down = max(0, min(levels_down, MAX_LEVEL_PER_SIDE))
+                if grid_mode == GRID_MODE_AS:
+                    levels_up = 1
+                    levels_down = 1
+                else:
+                    levels_up = max(0, min(levels_up, MAX_LEVEL_PER_SIDE))
+                    levels_down = max(0, min(levels_down, MAX_LEVEL_PER_SIDE))
 
                 size_mode = str(strat.get("order_size_mode") or "notional")
                 size_value = _safe_decimal(strat.get("order_size_value") or 0)
@@ -883,7 +941,18 @@ class BotManager:
 
                 cancel_orders: list[tuple[Any, Decimal]] = []
                 keep_ask_prices: set[Decimal] = set()
-                if desired_asks:
+                if grid_mode == GRID_MODE_AS:
+                    target = desired_asks[0] if desired_asks else None
+                    for price, orders in asks_by_price.items():
+                        if target is not None and price == target:
+                            keep_ask_prices.add(price)
+                            if len(orders) > 1:
+                                for extra in orders[1:]:
+                                    cancel_orders.append((extra, price))
+                            continue
+                        for o in orders:
+                            cancel_orders.append((o, price))
+                elif desired_asks:
                     ask_max = max(desired_asks)
                     for price, orders in asks_by_price.items():
                         if price in desired_ask_set:
@@ -901,7 +970,18 @@ class BotManager:
                             cancel_orders.append((o, price))
 
                 keep_bid_prices: set[Decimal] = set()
-                if desired_bids:
+                if grid_mode == GRID_MODE_AS:
+                    target = desired_bids[0] if desired_bids else None
+                    for price, orders in bids_by_price.items():
+                        if target is not None and price == target:
+                            keep_bid_prices.add(price)
+                            if len(orders) > 1:
+                                for extra in orders[1:]:
+                                    cancel_orders.append((extra, price))
+                            continue
+                        for o in orders:
+                            cancel_orders.append((o, price))
+                elif desired_bids:
                     bid_min = min(desired_bids)
                     for price, orders in bids_by_price.items():
                         if price in desired_bid_set:
