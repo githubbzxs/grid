@@ -255,6 +255,18 @@ textarea {
   resize: vertical;
 }
 
+.output-box {
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+  border-radius: 10px;
+  padding: 10px;
+  min-height: 140px;
+  max-height: 320px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 input::placeholder {
   color: rgba(200, 192, 147, 0.55);
 }
@@ -442,4 +454,10 @@ button.danger {
   word-break: break-word;
   font-size: 12px;
   line-height: 1.5;
+  max-height: 360px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px;
+  background: var(--input-bg);
 }

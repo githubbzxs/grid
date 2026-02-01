@@ -804,18 +804,15 @@ class BotManager:
                                 )
 
                 if available_slots > 0 and (missing_asks + missing_bids) > 0:
-                    create_plan: list[tuple[str, Decimal]] = []
-                    a_idx = 0
-                    b_idx = 0
-                    while len(create_plan) < available_slots and (a_idx < len(missing_ask_prices) or b_idx < len(missing_bid_prices)):
-                        if a_idx < len(missing_ask_prices):
-                            create_plan.append(("ask", missing_ask_prices[a_idx]))
-                            a_idx += 1
-                            if len(create_plan) >= available_slots:
-                                break
-                        if b_idx < len(missing_bid_prices):
-                            create_plan.append(("bid", missing_bid_prices[b_idx]))
-                            b_idx += 1
+                    plan_candidates: list[tuple[Decimal, str, Decimal]] = []
+                    for price in missing_ask_prices:
+                        plan_candidates.append((abs(price - center), "ask", price))
+                    for price in missing_bid_prices:
+                        plan_candidates.append((abs(price - center), "bid", price))
+                    plan_candidates.sort(key=lambda item: (item[0], 0 if item[1] == "ask" else 1))
+                    create_plan: list[tuple[str, Decimal]] = [
+                        (side, price) for _, side, price in plan_candidates[:available_slots]
+                    ]
 
                     free_ask_levels = [i for i in range(1, MAX_LEVEL_PER_SIDE + 1) if i not in ask_used_levels]
                     free_bid_levels = [i for i in range(1, MAX_LEVEL_PER_SIDE + 1) if i not in bid_used_levels]

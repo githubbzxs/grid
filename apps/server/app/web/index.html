@@ -333,8 +333,17 @@
             <div>
               <div class="btns">
                 <button id="btn-refresh-account">刷新账户</button>
+                <button id="btn-copy-account">复制</button>
+                <button id="btn-clear-account">清空</button>
               </div>
-              <textarea id="account-output" class="mono" readonly placeholder="点击“刷新账户”后显示"></textarea>
+              <pre
+                id="account-output"
+                class="mono output-box"
+                aria-live="polite"
+                data-placeholder="点击“刷新账户”后显示"
+              >
+点击“刷新账户”后显示</pre
+              >
             </div>
             <div>
               <div class="row">
@@ -352,14 +361,28 @@
               </div>
               <div class="btns">
                 <button id="btn-refresh-orders">刷新挂单</button>
+                <button id="btn-copy-orders">复制</button>
+                <button id="btn-clear-orders">清空</button>
               </div>
-              <textarea id="orders-output" class="mono" readonly placeholder="点击“刷新挂单”后显示"></textarea>
+              <pre
+                id="orders-output"
+                class="mono output-box"
+                aria-live="polite"
+                data-placeholder="请先配置币对并点击“刷新挂单”"
+              >
+请先配置币对并点击“刷新挂单”</pre
+              >
             </div>
           </div>
         </div>
 
         <div class="card section page-section" id="section-logs">
           <h2>日志</h2>
+          <div class="btns">
+            <button id="btn-copy-logs">复制</button>
+            <button id="btn-clear-logs">清空</button>
+            <button id="btn-toggle-log-scroll">自动滚动：开</button>
+          </div>
           <div class="logs mono" id="logs"></div>
         </div>
       </div>

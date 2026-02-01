@@ -50,10 +50,14 @@ const els = {
   botsTbody: document.getElementById("bots-tbody"),
 
   btnRefreshAccount: document.getElementById("btn-refresh-account"),
+  btnCopyAccount: document.getElementById("btn-copy-account"),
+  btnClearAccount: document.getElementById("btn-clear-account"),
   accountOutput: document.getElementById("account-output"),
   ordersSymbol: document.getElementById("orders-symbol"),
   ordersMine: document.getElementById("orders-mine"),
   btnRefreshOrders: document.getElementById("btn-refresh-orders"),
+  btnCopyOrders: document.getElementById("btn-copy-orders"),
+  btnClearOrders: document.getElementById("btn-clear-orders"),
   ordersOutput: document.getElementById("orders-output"),
 
   rtProfit: document.getElementById("rt-profit"),
@@ -70,6 +74,9 @@ const els = {
   historyTbody: document.getElementById("history-tbody"),
 
   logs: document.getElementById("logs"),
+  btnCopyLogs: document.getElementById("btn-copy-logs"),
+  btnClearLogs: document.getElementById("btn-clear-logs"),
+  btnToggleLogScroll: document.getElementById("btn-toggle-log-scroll"),
 };
 
 let authState = { setup_required: true, authenticated: false, unlocked: false };
@@ -80,6 +87,7 @@ let lastBots = {};
 let runtimeTimer = null;
 let accountResolveTimer = null;
 let accountResolving = false;
+let logAutoScroll = true;
 const navLinks = Array.from(document.querySelectorAll(".nav-links a"));
 const pageSections = Array.from(document.querySelectorAll(".page-section"));
 
@@ -375,7 +383,9 @@ function appendLog(line) {
   current.push(line);
   const sliced = current.slice(-maxLines);
   els.logs.textContent = sliced.join("\n") + "\n";
-  els.logs.scrollTop = els.logs.scrollHeight;
+  if (logAutoScroll) {
+    els.logs.scrollTop = els.logs.scrollHeight;
+  }
 }
 
 function startLogStream() {
@@ -705,13 +715,14 @@ function pickMarketId(symbol, items) {
 async function refreshAccount() {
   const exchange = currentExchange();
   const resp = await apiFetch(`/api/exchange/account_snapshot?exchange=${encodeURIComponent(exchange)}`);
-  els.accountOutput.value = JSON.stringify(resp.account || {}, null, 2);
+  els.accountOutput.textContent = JSON.stringify(resp.account || {}, null, 2);
 }
 
 async function refreshOrders() {
   const symbol = els.ordersSymbol.value;
   if (!symbol) {
-    els.ordersOutput.value = "请先配置币对。";
+    const placeholder = els.ordersOutput.dataset.placeholder || "请先配置币对。";
+    els.ordersOutput.textContent = placeholder;
     return;
   }
   const mine = els.ordersMine.value;
@@ -719,7 +730,31 @@ async function refreshOrders() {
   const resp = await apiFetch(
     `/api/exchange/active_orders?symbol=${encodeURIComponent(symbol)}&mine=${encodeURIComponent(mine)}&exchange=${encodeURIComponent(exchange)}`
   );
-  els.ordersOutput.value = JSON.stringify(resp || {}, null, 2);
+  els.ordersOutput.textContent = JSON.stringify(resp || {}, null, 2);
+}
+
+function copyText(text) {
+  if (!text) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).catch(() => {});
+    return;
+  }
+  const temp = document.createElement("textarea");
+  temp.value = text;
+  temp.style.position = "fixed";
+  temp.style.left = "-9999px";
+  document.body.appendChild(temp);
+  temp.select();
+  try {
+    document.execCommand("copy");
+  } catch {}
+  temp.remove();
+}
+
+function clearOutput(el) {
+  if (!el) return;
+  const placeholder = el.dataset && el.dataset.placeholder ? el.dataset.placeholder : "";
+  el.textContent = placeholder;
 }
 
 function fmtNumber(value, digits = 4) {
@@ -1017,6 +1052,42 @@ function wire() {
       alert(e.message);
     }
   });
+  if (els.btnCopyAccount) {
+    els.btnCopyAccount.addEventListener("click", () => {
+      copyText(els.accountOutput.textContent || "");
+    });
+  }
+  if (els.btnClearAccount) {
+    els.btnClearAccount.addEventListener("click", () => {
+      clearOutput(els.accountOutput);
+    });
+  }
+  if (els.btnCopyOrders) {
+    els.btnCopyOrders.addEventListener("click", () => {
+      copyText(els.ordersOutput.textContent || "");
+    });
+  }
+  if (els.btnClearOrders) {
+    els.btnClearOrders.addEventListener("click", () => {
+      clearOutput(els.ordersOutput);
+    });
+  }
+  if (els.btnCopyLogs) {
+    els.btnCopyLogs.addEventListener("click", () => {
+      copyText(els.logs.textContent || "");
+    });
+  }
+  if (els.btnClearLogs) {
+    els.btnClearLogs.addEventListener("click", () => {
+      clearOutput(els.logs);
+    });
+  }
+  if (els.btnToggleLogScroll) {
+    els.btnToggleLogScroll.addEventListener("click", () => {
+      logAutoScroll = !logAutoScroll;
+      els.btnToggleLogScroll.textContent = `自动滚动：${logAutoScroll ? "开" : "关"}`;
+    });
+  }
   if (els.btnRefreshHistory) {
     els.btnRefreshHistory.addEventListener("click", async () => {
       try {
