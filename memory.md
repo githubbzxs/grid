@@ -13,9 +13,11 @@
 - [x] 重写 README，整理结构与步骤说明
 - [x] 排查 Python 3.12 环境依赖安装卡在 starknet-crypto-py 构建问题
 - [x] 服务器使用 PPA 安装 Python 3.11，重建 .venv 并成功完成依赖安装
+- [x] 服务器已启动服务（Uvicorn 监听 0.0.0.0:9999）
 
 **下一步计划**:
 - [ ] 如需长期避免误建 3.12 venv，可考虑调整启动脚本优先使用 python3.11
+- [ ] 如需后台常驻/开机自启，可增加 systemd 服务或使用 nohup
 
 ## 2. 🛠 Tech Stack & Config (技术栈与配置)
 
@@ -71,5 +73,5 @@
 
 ---
 
-**Last Updated**: 2026-02-01 11:10
+**Last Updated**: 2026-02-01 11:13
 
