@@ -223,10 +223,22 @@ async def _lighter_positions_map(trader: LighterTrader) -> Dict[int, Dict[str, D
     positions = []
     if isinstance(data, dict):
         accounts = data.get("accounts")
-        if isinstance(accounts, list) and accounts:
-            first = accounts[0] or {}
-            if isinstance(first, dict):
-                positions = first.get("positions") or []
+        picked = None
+        if isinstance(accounts, list):
+            for item in accounts:
+                if not isinstance(item, dict):
+                    continue
+                idx = item.get("account_index") or item.get("accountIndex") or item.get("index")
+                try:
+                    if idx is not None and int(idx) == int(trader.account_index):
+                        picked = item
+                        break
+                except Exception:
+                    continue
+            if picked is None and accounts:
+                picked = accounts[0] if isinstance(accounts[0], dict) else None
+        if isinstance(picked, dict):
+            positions = picked.get("positions") or []
         elif isinstance(data.get("positions"), list):
             positions = data.get("positions") or []
 

@@ -195,6 +195,7 @@ function strategyDefaults(mode = "dynamic") {
       as_k: 1.5,
       as_tau_seconds: 30,
       as_vol_points: 60,
+      as_step_multiplier: 1,
       as_max_step_multiplier: 10,
       as_max_drawdown: 0,
     };
@@ -287,14 +288,12 @@ function asStrategyRowTemplate(strategy) {
   const asK = escapeHtml(valueText(strategy.as_k));
   const asTau = escapeHtml(valueText(strategy.as_tau_seconds));
   const asVol = escapeHtml(valueText(strategy.as_vol_points));
-  const asStepMult = escapeHtml(valueText(strategy.as_max_step_multiplier));
+  const asStepMult = escapeHtml(valueText(strategy.as_step_multiplier));
+  const asMaxStepMult = escapeHtml(valueText(strategy.as_max_step_multiplier));
   const asMaxDrawdown = escapeHtml(valueText(strategy.as_max_drawdown));
   const up = escapeHtml(valueText(strategy.levels_up));
   const down = escapeHtml(valueText(strategy.levels_down));
   const size = escapeHtml(valueText(strategy.order_size_value));
-  const maxpos = escapeHtml(valueText(strategy.max_position_notional));
-  const exitpos = escapeHtml(valueText(strategy.reduce_position_notional));
-  const reduce = escapeHtml(valueText(strategy.reduce_order_size_multiplier));
   const mode = strategy.order_size_mode === "base" ? "base" : "notional";
   return `<tr>
     <td data-label="标的"><input class="st-symbol mono" placeholder="例如 BTC" value="${symbol}" /></td>
@@ -306,10 +305,11 @@ function asStrategyRowTemplate(strategy) {
     <td data-label="AS-k"><input class="st-as-k" placeholder="默认 1.5" value="${asK}" /></td>
     <td data-label="AS-τ(s)"><input class="st-as-tau" placeholder="默认 30" value="${asTau}" /></td>
     <td data-label="AS-σ采样"><input class="st-as-vol" placeholder="默认 60" value="${asVol}" /></td>
-    <td data-label="AS 价差倍数"><input class="st-as-step-mult" placeholder="默认 10" value="${asStepMult}" /></td>
+    <td data-label="AS 价差乘数"><input class="st-as-step-mult" placeholder="默认 1" value="${asStepMult}" /></td>
+    <td data-label="AS 价差倍数"><input class="st-as-max-step-mult" placeholder="默认 10" value="${asMaxStepMult}" /></td>
     <td data-label="AS 最大回撤"><input class="st-as-max-dd" placeholder="例如 50" value="${asMaxDrawdown}" /></td>
-    <td data-label="上层"><input class="st-up" placeholder="10" value="${up}" /></td>
-    <td data-label="下层"><input class="st-down" placeholder="10" value="${down}" /></td>
+    <td data-label="上层"><input class="st-up" placeholder="1" value="${up}" /></td>
+    <td data-label="下层"><input class="st-down" placeholder="1" value="${down}" /></td>
     <td data-label="每单模式">
       <select class="st-mode">
         <option value="notional" ${mode === "notional" ? "selected" : ""}>固定名义金额</option>
@@ -317,9 +317,6 @@ function asStrategyRowTemplate(strategy) {
       </select>
     </td>
     <td data-label="每单数量"><input class="st-size" placeholder="例如 5" value="${size}" /></td>
-    <td data-label="触发仓位"><input class="st-maxpos" placeholder="例如 100" value="${maxpos}" /></td>
-    <td data-label="退出仓位"><input class="st-exitpos" placeholder="例如 80" value="${exitpos}" /></td>
-    <td data-label="减仓倍数"><input class="st-reduce" placeholder="例如 2" value="${reduce}" /></td>
     <td data-label="操作"><button class="danger btn-remove-row" type="button">删除</button></td>
   </tr>`;
 }
@@ -422,12 +419,16 @@ function collectStrategiesFromTable() {
       strategies[symbol] = {
         ...base,
         grid_mode: "as",
+        max_position_notional: 0,
+        reduce_position_notional: 0,
+        reduce_order_size_multiplier: 1,
         as_min_step: numOrZero(row.querySelector(".st-as-min-step")?.value),
         as_gamma: numOrZero(row.querySelector(".st-as-gamma")?.value),
         as_k: numOrZero(row.querySelector(".st-as-k")?.value),
         as_tau_seconds: numOrZero(row.querySelector(".st-as-tau")?.value),
         as_vol_points: Math.floor(numOrZero(row.querySelector(".st-as-vol")?.value)),
-        as_max_step_multiplier: numOrZero(row.querySelector(".st-as-step-mult")?.value),
+        as_step_multiplier: numOrZero(row.querySelector(".st-as-step-mult")?.value),
+        as_max_step_multiplier: numOrZero(row.querySelector(".st-as-max-step-mult")?.value),
         as_max_drawdown: numOrZero(row.querySelector(".st-as-max-dd")?.value),
       };
       return;

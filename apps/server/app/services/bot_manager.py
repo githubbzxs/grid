@@ -30,6 +30,7 @@ DEFAULT_AS_GAMMA = Decimal("0.1")
 DEFAULT_AS_K = Decimal("1.5")
 DEFAULT_AS_TAU_SECONDS = Decimal("30")
 DEFAULT_AS_VOL_POINTS = 60
+DEFAULT_AS_STEP_MULT = Decimal("1")
 DEFAULT_AS_MAX_STEP_MULT = Decimal("10")
 
 
@@ -470,6 +471,7 @@ class BotManager:
         k = _as_param_decimal(strat, "as_k", DEFAULT_AS_K)
         tau = _as_param_decimal(strat, "as_tau_seconds", DEFAULT_AS_TAU_SECONDS)
         vol_points = _as_param_int(strat, "as_vol_points", DEFAULT_AS_VOL_POINTS, 5)
+        step_mult = _as_param_decimal(strat, "as_step_multiplier", DEFAULT_AS_STEP_MULT)
         max_step_mult = _as_param_decimal(strat, "as_max_step_multiplier", DEFAULT_AS_MAX_STEP_MULT)
 
         history = self._append_mid_history(symbol, now_ms, mid, vol_points + 1)
@@ -487,7 +489,8 @@ class BotManager:
 
         # AS 模型：r = S - q * γ * σ^2 * τ，δ* = γ * σ^2 * τ + (2/γ) ln(1 + γ/k)
         spread = gamma_f * (sigma_f ** 2) * tau_f + (2.0 / gamma_f) * math.log(1.0 + (gamma_f / k_f))
-        step = Decimal(str(max(spread / 2.0, float(min_step))))
+        step_mult_f = float(step_mult) if float(step_mult) > 0 else 1.0
+        step = Decimal(str(max((spread / 2.0) * step_mult_f, float(min_step))))
         if min_step > 0 and max_step_mult > 0:
             max_step = min_step * max_step_mult
             if step > max_step:
