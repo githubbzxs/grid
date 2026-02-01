@@ -1234,7 +1234,6 @@ function wire() {
   bindStrategyTable(els.strategyAsTbody, "as");
 
   els.btnLogout.addEventListener("click", async () => {
-  els.btnLogout.addEventListener("click", async () => {
     try {
       await logout();
     } catch (e) {
