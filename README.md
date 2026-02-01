@@ -61,11 +61,11 @@ WebUI 使用步骤（建议先模拟）
    - 选择交易所与 mainnet/testnet
    - Lighter：填写 L1 地址、account_index、api_key_index、API 私钥（可选 ETH 私钥），可点“自动查询 account_index”
    - Paradex：填写 L2 地址与 L2 私钥（推荐），或填写 L1 地址与 L1 私钥
-3) 拉取市场列表，找到你要跑的 BTC/ETH/SOL perp 的 `market_id`（Lighter 为数字，Paradex 为市场符号）
-4) 策略配置
-   - 填写每个标的的 `market_id`、固定价差、上下层数、每单模式与数值
+3) 拉取市场列表，找到你要跑的 perp 的 `market_id`（Lighter 为数字，Paradex 为市场符号），WebUI 会自动填充
+4) 策略配置（可新增/删除币对）
+   - 填写每个标的的 `market_id`、固定价差、上下层数、每单模式与数值（market_id 会自动填充）
    - 运行模式先选“模拟（不下单）”，如需模拟成交可开启“模拟成交”
-5) 启动 BTC/ETH/SOL
+5) 启动全部
    - 模拟成交会在价格触达挂单线时视为成交，并统计仓位/成交
 6) 确认无误后切到“实盘（会真实下单）”，保存策略，然后停止再启动
 

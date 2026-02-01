@@ -30,38 +30,10 @@ const els = {
   marketsOutput: document.getElementById("markets-output"),
   testOutput: document.getElementById("test-output"),
 
-  stBtcEnabled: document.getElementById("st-btc-enabled"),
-  stBtcMarket: document.getElementById("st-btc-market"),
-  stBtcStep: document.getElementById("st-btc-step"),
-  stBtcUp: document.getElementById("st-btc-up"),
-  stBtcDown: document.getElementById("st-btc-down"),
-  stBtcMode: document.getElementById("st-btc-mode"),
-  stBtcSize: document.getElementById("st-btc-size"),
-  stBtcMaxPos: document.getElementById("st-btc-maxpos"),
-  stBtcExitPos: document.getElementById("st-btc-exitpos"),
-  stBtcReduce: document.getElementById("st-btc-reduce"),
-
-  stEthEnabled: document.getElementById("st-eth-enabled"),
-  stEthMarket: document.getElementById("st-eth-market"),
-  stEthStep: document.getElementById("st-eth-step"),
-  stEthUp: document.getElementById("st-eth-up"),
-  stEthDown: document.getElementById("st-eth-down"),
-  stEthMode: document.getElementById("st-eth-mode"),
-  stEthSize: document.getElementById("st-eth-size"),
-  stEthMaxPos: document.getElementById("st-eth-maxpos"),
-  stEthExitPos: document.getElementById("st-eth-exitpos"),
-  stEthReduce: document.getElementById("st-eth-reduce"),
-
-  stSolEnabled: document.getElementById("st-sol-enabled"),
-  stSolMarket: document.getElementById("st-sol-market"),
-  stSolStep: document.getElementById("st-sol-step"),
-  stSolUp: document.getElementById("st-sol-up"),
-  stSolDown: document.getElementById("st-sol-down"),
-  stSolMode: document.getElementById("st-sol-mode"),
-  stSolSize: document.getElementById("st-sol-size"),
-  stSolMaxPos: document.getElementById("st-sol-maxpos"),
-  stSolExitPos: document.getElementById("st-sol-exitpos"),
-  stSolReduce: document.getElementById("st-sol-reduce"),
+  strategyTable: document.getElementById("strategy-table"),
+  strategyTbody: document.getElementById("strategy-tbody"),
+  btnAddSymbol: document.getElementById("btn-add-symbol"),
+  btnSaveStrategies: document.getElementById("btn-save-strategies"),
 
   runtimeDryRun: document.getElementById("runtime-dry-run"),
   runtimeSimulateFill: document.getElementById("runtime-simulate-fill"),
@@ -73,8 +45,6 @@ const els = {
   runtimeRestartWindow: document.getElementById("runtime-restart-window"),
   runtimeStopMinutes: document.getElementById("runtime-stop-minutes"),
   runtimeStopVolume: document.getElementById("runtime-stop-volume"),
-  btnSaveStrategies: document.getElementById("btn-save-strategies"),
-  btnAutoMarket: document.getElementById("btn-auto-market"),
 
   btnStartAll: document.getElementById("btn-start-all"),
   btnStopAll: document.getElementById("btn-stop-all"),
@@ -107,6 +77,8 @@ const els = {
 let authState = { setup_required: true, authenticated: false, unlocked: false };
 let logSource = null;
 let lastMarkets = [];
+let currentStrategies = [];
+let lastBots = {};
 let runtimeTimer = null;
 const navLinks = Array.from(document.querySelectorAll(".nav-links a"));
 const pageSections = Array.from(document.querySelectorAll(".page-section"));
@@ -129,6 +101,215 @@ function syncSimulateFillState() {
   if (!dryRun) {
     els.runtimeSimulateFill.value = "false";
   }
+}
+
+function normalizeSymbol(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function strategyDefaults() {
+  return {
+    symbol: "",
+    enabled: true,
+    market_id: null,
+    grid_step: 0,
+    levels_up: 10,
+    levels_down: 10,
+    order_size_mode: "notional",
+    order_size_value: 5,
+    max_position_notional: 20,
+    reduce_position_notional: 0,
+    reduce_order_size_multiplier: 1,
+    post_only: true,
+    max_open_orders: 50,
+  };
+}
+
+function normalizeStrategies(raw) {
+  const list = [];
+  const seen = new Set();
+  if (Array.isArray(raw)) {
+    raw.forEach((item) => {
+      if (!item || typeof item !== "object") return;
+      const symbol = normalizeSymbol(item.symbol || item.name || item.ticker);
+      if (!symbol || seen.has(symbol)) return;
+      const merged = { ...strategyDefaults(), ...item, symbol };
+      list.push(merged);
+      seen.add(symbol);
+    });
+  } else if (raw && typeof raw === "object") {
+    Object.entries(raw).forEach(([key, value]) => {
+      const symbol = normalizeSymbol(key);
+      if (!symbol || seen.has(symbol)) return;
+      const base = value && typeof value === "object" ? value : {};
+      const merged = { ...strategyDefaults(), ...base, symbol };
+      list.push(merged);
+      seen.add(symbol);
+    });
+  }
+  return list;
+}
+
+function valueText(value) {
+  if (value === null || value === undefined) return "";
+  return String(value);
+}
+
+function strategyRowTemplate(strategy) {
+  const symbol = escapeHtml(strategy.symbol || "");
+  const enabled = strategy.enabled ? "checked" : "";
+  const market = escapeHtml(valueText(strategy.market_id));
+  const step = escapeHtml(valueText(strategy.grid_step));
+  const up = escapeHtml(valueText(strategy.levels_up));
+  const down = escapeHtml(valueText(strategy.levels_down));
+  const size = escapeHtml(valueText(strategy.order_size_value));
+  const maxpos = escapeHtml(valueText(strategy.max_position_notional));
+  const exitpos = escapeHtml(valueText(strategy.reduce_position_notional));
+  const reduce = escapeHtml(valueText(strategy.reduce_order_size_multiplier));
+  const mode = strategy.order_size_mode === "base" ? "base" : "notional";
+  return `<tr>
+    <td><input class="st-symbol mono" placeholder="例如 BTC" value="${symbol}" /></td>
+    <td><input class="st-enabled" type="checkbox" ${enabled} /></td>
+    <td><input class="st-market" placeholder="例如 0 或 ETH-USD-PERP" value="${market}" /></td>
+    <td><input class="st-step" placeholder="例如 5" value="${step}" /></td>
+    <td><input class="st-up" placeholder="10" value="${up}" /></td>
+    <td><input class="st-down" placeholder="10" value="${down}" /></td>
+    <td>
+      <select class="st-mode">
+        <option value="notional" ${mode === "notional" ? "selected" : ""}>固定名义金额</option>
+        <option value="base" ${mode === "base" ? "selected" : ""}>固定币数量</option>
+      </select>
+    </td>
+    <td><input class="st-size" placeholder="例如 5" value="${size}" /></td>
+    <td><input class="st-maxpos" placeholder="例如 100" value="${maxpos}" /></td>
+    <td><input class="st-exitpos" placeholder="例如 80" value="${exitpos}" /></td>
+    <td><input class="st-reduce" placeholder="例如 2" value="${reduce}" /></td>
+    <td><button class="danger btn-remove-row" type="button">删除</button></td>
+  </tr>`;
+}
+
+function addStrategyRow(strategy) {
+  if (!els.strategyTbody) return;
+  const data = strategy ? { ...strategyDefaults(), ...strategy } : strategyDefaults();
+  els.strategyTbody.insertAdjacentHTML("beforeend", strategyRowTemplate(data));
+}
+
+function renderStrategies(list) {
+  if (!els.strategyTbody) return;
+  const rows = list && list.length ? list.map((item) => strategyRowTemplate(item)).join("") : "";
+  els.strategyTbody.innerHTML = rows;
+  if (!rows) {
+    addStrategyRow({ symbol: "" });
+  }
+  if (lastMarkets.length) {
+    autoFillMarketIds(lastMarkets);
+  }
+}
+
+function getStrategyRows() {
+  if (!els.strategyTbody) return [];
+  return Array.from(els.strategyTbody.querySelectorAll("tr"));
+}
+
+function rowHasValues(row) {
+  const inputs = Array.from(row.querySelectorAll("input, select"));
+  return inputs.some((input) => {
+    if (input.classList.contains("st-symbol")) return false;
+    if (input.type === "checkbox") return input.checked;
+    return String(input.value || "").trim() !== "";
+  });
+}
+
+function collectStrategiesFromTable() {
+  const rows = getStrategyRows();
+  const strategies = {};
+  const seen = new Set();
+  let hasEmptySymbol = false;
+
+  rows.forEach((row) => {
+    const symbolInput = row.querySelector(".st-symbol");
+    const symbol = normalizeSymbol(symbolInput ? symbolInput.value : "");
+    if (!symbol) {
+      if (rowHasValues(row)) {
+        hasEmptySymbol = true;
+      }
+      return;
+    }
+    if (seen.has(symbol)) {
+      throw new Error(`币对重复：${symbol}`);
+    }
+    seen.add(symbol);
+    const existing = currentStrategies.find((item) => item.symbol === symbol) || {};
+    strategies[symbol] = {
+      ...strategyDefaults(),
+      ...existing,
+      symbol,
+      enabled: Boolean(row.querySelector(".st-enabled")?.checked),
+      market_id: marketIdValue(row.querySelector(".st-market")),
+      grid_step: numOrZero(row.querySelector(".st-step")?.value),
+      levels_up: Math.floor(numOrZero(row.querySelector(".st-up")?.value)),
+      levels_down: Math.floor(numOrZero(row.querySelector(".st-down")?.value)),
+      order_size_mode: row.querySelector(".st-mode")?.value || "notional",
+      order_size_value: numOrZero(row.querySelector(".st-size")?.value),
+      max_position_notional: numOrZero(row.querySelector(".st-maxpos")?.value),
+      reduce_position_notional: numOrZero(row.querySelector(".st-exitpos")?.value),
+      reduce_order_size_multiplier: numOrZero(row.querySelector(".st-reduce")?.value),
+    };
+  });
+
+  if (hasEmptySymbol) {
+    throw new Error("存在未填写的币对，请补充或删除。");
+  }
+  return strategies;
+}
+
+function getCurrentStrategySymbols() {
+  return currentStrategies.map((item) => item.symbol).filter(Boolean);
+}
+
+function mergeSymbols(...lists) {
+  const result = [];
+  const seen = new Set();
+  lists.flat().forEach((item) => {
+    const symbol = normalizeSymbol(item);
+    if (!symbol || seen.has(symbol)) return;
+    seen.add(symbol);
+    result.push(symbol);
+  });
+  return result;
+}
+
+function updateOrdersSymbolOptions() {
+  if (!els.ordersSymbol) return;
+  const symbols = mergeSymbols(getCurrentStrategySymbols(), Object.keys(lastBots || {}));
+  const current = els.ordersSymbol.value;
+  if (!symbols.length) {
+    els.ordersSymbol.innerHTML = '<option value="">暂无币对</option>';
+    return;
+  }
+  els.ordersSymbol.innerHTML = symbols.map((s) => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join("");
+  if (symbols.includes(current)) {
+    els.ordersSymbol.value = current;
+  } else {
+    els.ordersSymbol.value = symbols[0];
+  }
+}
+
+function autoFillMarketIdForRow(row, items) {
+  const symbolInput = row.querySelector(".st-symbol");
+  const marketInput = row.querySelector(".st-market");
+  if (!symbolInput || !marketInput) return;
+  const symbol = normalizeSymbol(symbolInput.value);
+  if (!symbol || String(marketInput.value || "").trim()) return;
+  const picked = pickMarketId(symbol, items);
+  if (picked != null) {
+    marketInput.value = String(picked);
+  }
+}
+
+function autoFillMarketIds(items) {
+  if (!items || !items.length) return;
+  getStrategyRows().forEach((row) => autoFillMarketIdForRow(row, items));
 }
 
 async function apiFetch(path, { method = "GET", body = null } = {}) {
@@ -356,60 +537,12 @@ function fillConfig(cfg) {
     els.historyLimit.value = "200";
   }
 
-  const st = cfg.strategies || {};
-  fillStrategyRow("BTC", st.BTC || {}, "btc");
-  fillStrategyRow("ETH", st.ETH || {}, "eth");
-  fillStrategyRow("SOL", st.SOL || {}, "sol");
+  const st = normalizeStrategies(cfg.strategies || {});
+  currentStrategies = st;
+  renderStrategies(st);
+  updateOrdersSymbolOptions();
 
   applyExchangeUI();
-}
-
-function fillStrategyRow(symbol, s, key) {
-  const enabled = Boolean(s.enabled);
-  const market = s.market_id == null ? "" : String(s.market_id);
-  const step = s.grid_step == null ? "" : String(s.grid_step);
-  const up = s.levels_up == null ? "" : String(s.levels_up);
-  const down = s.levels_down == null ? "" : String(s.levels_down);
-  const mode = s.order_size_mode || "notional";
-  const size = s.order_size_value == null ? "" : String(s.order_size_value);
-  const maxpos = s.max_position_notional == null ? "" : String(s.max_position_notional);
-  const exitpos = s.reduce_position_notional == null ? "" : String(s.reduce_position_notional);
-  const reduce = s.reduce_order_size_multiplier == null ? "" : String(s.reduce_order_size_multiplier);
-
-  if (key === "btc") {
-    els.stBtcEnabled.checked = enabled;
-    els.stBtcMarket.value = market;
-    els.stBtcStep.value = step;
-    els.stBtcUp.value = up;
-    els.stBtcDown.value = down;
-    els.stBtcMode.value = mode;
-    els.stBtcSize.value = size;
-    els.stBtcMaxPos.value = maxpos;
-    els.stBtcExitPos.value = exitpos;
-    els.stBtcReduce.value = reduce;
-  } else if (key === "eth") {
-    els.stEthEnabled.checked = enabled;
-    els.stEthMarket.value = market;
-    els.stEthStep.value = step;
-    els.stEthUp.value = up;
-    els.stEthDown.value = down;
-    els.stEthMode.value = mode;
-    els.stEthSize.value = size;
-    els.stEthMaxPos.value = maxpos;
-    els.stEthExitPos.value = exitpos;
-    els.stEthReduce.value = reduce;
-  } else if (key === "sol") {
-    els.stSolEnabled.checked = enabled;
-    els.stSolMarket.value = market;
-    els.stSolStep.value = step;
-    els.stSolUp.value = up;
-    els.stSolDown.value = down;
-    els.stSolMode.value = mode;
-    els.stSolSize.value = size;
-    els.stSolMaxPos.value = maxpos;
-    els.stSolExitPos.value = exitpos;
-    els.stSolReduce.value = reduce;
-  }
 }
 
 async function loadConfig() {
@@ -461,6 +594,7 @@ function numOrZero(v) {
 }
 
 function marketIdValue(input) {
+  if (!input) return null;
   const raw = String(input.value || "").trim();
   if (!raw) return null;
   if (currentExchange() === "paradex") return raw;
@@ -483,50 +617,7 @@ async function saveStrategies() {
     stop_after_minutes: numOrZero(els.runtimeStopMinutes ? els.runtimeStopMinutes.value : 0),
     stop_after_volume: numOrZero(els.runtimeStopVolume ? els.runtimeStopVolume.value : 0),
   };
-  const btcMarket = marketIdValue(els.stBtcMarket);
-  const ethMarket = marketIdValue(els.stEthMarket);
-  const solMarket = marketIdValue(els.stSolMarket);
-  const strategies = {
-    BTC: {
-      enabled: Boolean(els.stBtcEnabled.checked),
-      market_id: btcMarket,
-      grid_step: numOrZero(els.stBtcStep.value),
-      levels_up: Math.floor(numOrZero(els.stBtcUp.value)),
-      levels_down: Math.floor(numOrZero(els.stBtcDown.value)),
-      order_size_mode: els.stBtcMode.value,
-      order_size_value: numOrZero(els.stBtcSize.value),
-      max_position_notional: numOrZero(els.stBtcMaxPos.value),
-      reduce_position_notional: numOrZero(els.stBtcExitPos.value),
-      reduce_order_size_multiplier: numOrZero(els.stBtcReduce.value),
-      post_only: true,
-    },
-    ETH: {
-      enabled: Boolean(els.stEthEnabled.checked),
-      market_id: ethMarket,
-      grid_step: numOrZero(els.stEthStep.value),
-      levels_up: Math.floor(numOrZero(els.stEthUp.value)),
-      levels_down: Math.floor(numOrZero(els.stEthDown.value)),
-      order_size_mode: els.stEthMode.value,
-      order_size_value: numOrZero(els.stEthSize.value),
-      max_position_notional: numOrZero(els.stEthMaxPos.value),
-      reduce_position_notional: numOrZero(els.stEthExitPos.value),
-      reduce_order_size_multiplier: numOrZero(els.stEthReduce.value),
-      post_only: true,
-    },
-    SOL: {
-      enabled: Boolean(els.stSolEnabled.checked),
-      market_id: solMarket,
-      grid_step: numOrZero(els.stSolStep.value),
-      levels_up: Math.floor(numOrZero(els.stSolUp.value)),
-      levels_down: Math.floor(numOrZero(els.stSolDown.value)),
-      order_size_mode: els.stSolMode.value,
-      order_size_value: numOrZero(els.stSolSize.value),
-      max_position_notional: numOrZero(els.stSolMaxPos.value),
-      reduce_position_notional: numOrZero(els.stSolExitPos.value),
-      reduce_order_size_multiplier: numOrZero(els.stSolReduce.value),
-      post_only: true,
-    },
-  };
+  const strategies = collectStrategiesFromTable();
 
   const resp = await apiFetch("/api/config", { method: "POST", body: { runtime, strategies } });
   fillConfig(resp.config || {});
@@ -555,6 +646,7 @@ async function fetchMarkets() {
       `${x.symbol} id=${x.market_id} sizeDec=${x.supported_size_decimals} priceDec=${x.supported_price_decimals} makerFee=${x.maker_fee} takerFee=${x.taker_fee}`
   );
   els.marketsOutput.value = lines.join("\n");
+  autoFillMarketIds(items);
   return items;
 }
 
@@ -572,16 +664,6 @@ function pickMarketId(symbol, items) {
   return (prefer || candidates[0]).market_id;
 }
 
-async function autoFillMarketIds() {
-  const items = lastMarkets.length ? lastMarkets : await fetchMarkets();
-  const btc = pickMarketId("BTC", items);
-  const eth = pickMarketId("ETH", items);
-  const sol = pickMarketId("SOL", items);
-  if (btc != null) els.stBtcMarket.value = String(btc);
-  if (eth != null) els.stEthMarket.value = String(eth);
-  if (sol != null) els.stSolMarket.value = String(sol);
-}
-
 async function refreshAccount() {
   const exchange = currentExchange();
   const resp = await apiFetch(`/api/exchange/account_snapshot?exchange=${encodeURIComponent(exchange)}`);
@@ -590,6 +672,10 @@ async function refreshAccount() {
 
 async function refreshOrders() {
   const symbol = els.ordersSymbol.value;
+  if (!symbol) {
+    els.ordersOutput.value = "请先配置币对。";
+    return;
+  }
   const mine = els.ordersMine.value;
   const exchange = currentExchange();
   const resp = await apiFetch(
@@ -626,7 +712,8 @@ function renderRuntimeStatus(data) {
   els.rtUpdated.textContent = data.updated_at || "-";
 
   const symbols = data.symbols || {};
-  const rows = ["BTC", "ETH", "SOL"].map((s) => symbols[s] || { symbol: s });
+  const rowSymbols = mergeSymbols(getCurrentStrategySymbols(), Object.keys(symbols));
+  const rows = rowSymbols.map((s) => symbols[s] || { symbol: s });
   els.runtimeTbody.innerHTML = rows
     .map((r) => {
       const reduce = r.reduce_mode ? "是" : "否";
@@ -693,7 +780,7 @@ function startRuntimeLoop() {
 }
 
 function renderBots(bots) {
-  const symbols = ["BTC", "ETH", "SOL"];
+  const symbols = mergeSymbols(getCurrentStrategySymbols(), Object.keys(bots || {}));
   const rows = symbols.map((s) => bots[s] || { symbol: s, running: false, started_at: null, last_tick_at: null, message: "" });
   els.botsTbody.innerHTML = rows
     .map((r) => {
@@ -715,7 +802,9 @@ function renderBots(bots) {
 
 async function refreshBots() {
   const resp = await apiFetch("/api/bots/status");
-  renderBots(resp.bots || {});
+  lastBots = resp.bots || {};
+  renderBots(lastBots);
+  updateOrdersSymbolOptions();
 }
 
 async function startAll() {
@@ -723,12 +812,22 @@ async function startAll() {
   if (!dryRun) {
     if (!confirm("当前为实盘模式，会真实下单。确认启动吗？")) return;
   }
-  await apiFetch("/api/bots/start", { method: "POST", body: { symbols: ["BTC", "ETH", "SOL"] } });
+  const symbols = getCurrentStrategySymbols();
+  if (!symbols.length) {
+    alert("请先配置策略币对。");
+    return;
+  }
+  await apiFetch("/api/bots/start", { method: "POST", body: { symbols } });
   await refreshBots();
 }
 
 async function stopAll() {
-  await apiFetch("/api/bots/stop", { method: "POST", body: { symbols: ["BTC", "ETH", "SOL"] } });
+  const symbols = getCurrentStrategySymbols();
+  if (!symbols.length) {
+    alert("请先配置策略币对。");
+    return;
+  }
+  await apiFetch("/api/bots/stop", { method: "POST", body: { symbols } });
   await refreshBots();
 }
 
@@ -752,6 +851,45 @@ function wire() {
   if (els.runtimeDryRun) {
     els.runtimeDryRun.addEventListener("change", () => {
       syncSimulateFillState();
+    });
+  }
+  if (els.btnAddSymbol) {
+    els.btnAddSymbol.addEventListener("click", () => {
+      addStrategyRow({ symbol: "" });
+    });
+  }
+  if (els.strategyTbody) {
+    els.strategyTbody.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (target.classList.contains("btn-remove-row")) {
+        const row = target.closest("tr");
+        if (row) {
+          row.remove();
+          if (!getStrategyRows().length) {
+            addStrategyRow({ symbol: "" });
+          }
+        }
+      }
+    });
+    els.strategyTbody.addEventListener("change", async (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (target.classList.contains("st-symbol")) {
+        const row = target.closest("tr");
+        if (!row) return;
+        const symbol = normalizeSymbol(target.value);
+        target.value = symbol;
+        if (!symbol) return;
+        if (!lastMarkets.length) {
+          try {
+            await fetchMarkets();
+          } catch {}
+        }
+        if (lastMarkets.length) {
+          autoFillMarketIdForRow(row, lastMarkets);
+        }
+      }
     });
   }
   els.btnLogout.addEventListener("click", async () => {
@@ -778,13 +916,6 @@ function wire() {
   els.btnSaveStrategies.addEventListener("click", async () => {
     try {
       await saveStrategies();
-    } catch (e) {
-      alert(e.message);
-    }
-  });
-  els.btnAutoMarket.addEventListener("click", async () => {
-    try {
-      await autoFillMarketIds();
     } catch (e) {
       alert(e.message);
     }

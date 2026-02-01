@@ -118,6 +118,16 @@ def _safe_decimal(value: Any) -> Decimal:
         return Decimal(0)
 
 
+def _deep_merge(base: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
+    merged: Dict[str, Any] = dict(base)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def _fmt_decimal(value: Decimal, digits: int = 4) -> str:
     q = Decimal(1) / (Decimal(10) ** int(digits))
     return str(value.quantize(q, rounding=ROUND_HALF_UP))
@@ -487,7 +497,28 @@ async def update_config(
         patch = dict(patch)
         patch["exchange"] = exchange_patch
 
-    merged = request.app.state.config.update(patch)
+    merged = config
+    removed_symbols: set[str] = set()
+    if "strategies" in patch:
+        strategies_patch = patch.get("strategies") or {}
+        if not isinstance(strategies_patch, dict):
+            raise HTTPException(status_code=400, detail="策略配置格式错误")
+        normalized: Dict[str, Any] = {}
+        for key, value in strategies_patch.items():
+            symbol = str(key or "").strip().upper()
+            if not symbol:
+                continue
+            item = value if isinstance(value, dict) else {}
+            normalized[symbol] = dict(item)
+        prev_symbols = set((config.get("strategies", {}) or {}).keys())
+        removed_symbols = prev_symbols - set(normalized.keys())
+        merged = dict(merged)
+        merged["strategies"] = normalized
+        patch = dict(patch)
+        patch.pop("strategies", None)
+
+    if patch:
+        merged = _deep_merge(merged, patch)
 
     remember = bool(merged.get("exchange", {}).get("remember_secrets", True))
     runtime_secrets: Dict[str, str] = request.app.state.runtime_secrets
@@ -525,6 +556,14 @@ async def update_config(
             runtime_secrets["paradex_l2_private_key"] = str(plaintext_paradex_l2_key)
 
     request.app.state.config.write(merged)
+    if removed_symbols:
+        runtime_stats: Dict[str, Any] = request.app.state.runtime_stats
+        for symbol in removed_symbols:
+            try:
+                await request.app.state.bot_manager.stop(symbol)
+            except Exception:
+                pass
+            runtime_stats.pop(symbol, None)
     request.app.state.logbus.publish("config.update")
     return {"ok": True, "config": _mask_config(merged)}
 

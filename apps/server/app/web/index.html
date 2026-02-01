@@ -140,8 +140,8 @@
 
         <div class="card section page-section" id="section-strategy">
           <h2>策略配置（无限网格）</h2>
-          <div class="hint">先从“perp 市场列表”里找到 market_id（Lighter 为数字，Paradex 为市场符号），然后填到对应标的。</div>
-          <table class="table">
+          <div class="hint">先从“perp 市场列表”里找到 market_id（Lighter 为数字，Paradex 为市场符号），拉取市场列表后会自动填充。</div>
+          <table class="table" id="strategy-table">
             <thead>
               <tr>
                 <th>标的</th>
@@ -155,65 +155,15 @@
                 <th>触发仓位</th>
                 <th>退出仓位</th>
                 <th>减仓倍数</th>
+                <th>操作</th>
               </tr>
             </thead>
-            <tbody>
-              <tr>
-                <td class="mono">BTC</td>
-                <td><input id="st-btc-enabled" type="checkbox" /></td>
-                <td><input id="st-btc-market" placeholder="例如 0 或 ETH-USD-PERP" /></td>
-                <td><input id="st-btc-step" placeholder="例如 5" /></td>
-                <td><input id="st-btc-up" placeholder="10" /></td>
-                <td><input id="st-btc-down" placeholder="10" /></td>
-                <td>
-                  <select id="st-btc-mode">
-                    <option value="notional">固定名义金额</option>
-                    <option value="base">固定币数量</option>
-                  </select>
-                </td>
-                <td><input id="st-btc-size" placeholder="例如 5" /></td>
-                <td><input id="st-btc-maxpos" placeholder="例如 100" /></td>
-                <td><input id="st-btc-exitpos" placeholder="例如 80" /></td>
-                <td><input id="st-btc-reduce" placeholder="例如 2" /></td>
-              </tr>
-              <tr>
-                <td class="mono">ETH</td>
-                <td><input id="st-eth-enabled" type="checkbox" /></td>
-                <td><input id="st-eth-market" placeholder="例如 0 或 ETH-USD-PERP" /></td>
-                <td><input id="st-eth-step" placeholder="例如 5" /></td>
-                <td><input id="st-eth-up" placeholder="10" /></td>
-                <td><input id="st-eth-down" placeholder="10" /></td>
-                <td>
-                  <select id="st-eth-mode">
-                    <option value="notional">固定名义金额</option>
-                    <option value="base">固定币数量</option>
-                  </select>
-                </td>
-                <td><input id="st-eth-size" placeholder="例如 5" /></td>
-                <td><input id="st-eth-maxpos" placeholder="例如 100" /></td>
-                <td><input id="st-eth-exitpos" placeholder="例如 80" /></td>
-                <td><input id="st-eth-reduce" placeholder="例如 2" /></td>
-              </tr>
-              <tr>
-                <td class="mono">SOL</td>
-                <td><input id="st-sol-enabled" type="checkbox" /></td>
-                <td><input id="st-sol-market" placeholder="例如 0 或 SOL-USD-PERP" /></td>
-                <td><input id="st-sol-step" placeholder="例如 1" /></td>
-                <td><input id="st-sol-up" placeholder="10" /></td>
-                <td><input id="st-sol-down" placeholder="10" /></td>
-                <td>
-                  <select id="st-sol-mode">
-                    <option value="notional">固定名义金额</option>
-                    <option value="base">固定币数量</option>
-                  </select>
-                </td>
-                <td><input id="st-sol-size" placeholder="例如 5" /></td>
-                <td><input id="st-sol-maxpos" placeholder="例如 100" /></td>
-                <td><input id="st-sol-exitpos" placeholder="例如 80" /></td>
-                <td><input id="st-sol-reduce" placeholder="例如 2" /></td>
-              </tr>
-            </tbody>
+            <tbody id="strategy-tbody"></tbody>
           </table>
+
+          <div class="btns">
+            <button id="btn-add-symbol">添加币对</button>
+          </div>
 
           <div class="row" style="margin-top: 10px">
             <div>
@@ -290,14 +240,13 @@
 
           <div class="btns">
             <button class="primary" id="btn-save-strategies">保存策略</button>
-            <button id="btn-auto-market">自动填充 market_id</button>
           </div>
         </div>
 
         <div class="card section page-section" id="section-runtime">
           <h2>运行与状态</h2>
           <div class="btns">
-            <button class="primary" id="btn-start-all">启动 BTC/ETH/SOL</button>
+            <button class="primary" id="btn-start-all">启动全部</button>
             <button id="btn-stop-all">停止全部</button>
             <button class="danger" id="btn-emergency">紧急停止</button>
           </div>
@@ -424,11 +373,7 @@
               <div class="row">
                 <div>
                   <label>标的</label>
-                  <select id="orders-symbol">
-                    <option value="BTC">BTC</option>
-                    <option value="ETH">ETH</option>
-                    <option value="SOL">SOL</option>
-                  </select>
+                  <select id="orders-symbol"></select>
                 </div>
                 <div>
                   <label>只看网格订单</label>
