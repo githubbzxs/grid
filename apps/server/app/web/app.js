@@ -10,7 +10,6 @@ const els = {
   paradexFields: document.getElementById("paradex-fields"),
   exL1: document.getElementById("ex-l1"),
   exAccount: document.getElementById("ex-account"),
-  btnResolveAccount: document.getElementById("btn-resolve-account"),
   exKeyIndex: document.getElementById("ex-key-index"),
   exApiKey: document.getElementById("ex-api-key"),
   exEthKey: document.getElementById("ex-eth-key"),
@@ -79,6 +78,8 @@ let lastMarkets = [];
 let currentStrategies = [];
 let lastBots = {};
 let runtimeTimer = null;
+let accountResolveTimer = null;
+let accountResolving = false;
 const navLinks = Array.from(document.querySelectorAll(".nav-links a"));
 const pageSections = Array.from(document.querySelectorAll(".page-section"));
 
@@ -91,6 +92,26 @@ function applyExchangeUI() {
   const isParadex = currentExchange() === "paradex";
   if (els.lighterFields) els.lighterFields.hidden = isParadex;
   if (els.paradexFields) els.paradexFields.hidden = !isParadex;
+}
+
+function scheduleResolveAccountIndex() {
+  if (currentExchange() !== "lighter") return;
+  if (!els.exL1 || !els.exAccount) return;
+  const l1 = els.exL1.value.trim();
+  if (!l1) return;
+  if (String(els.exAccount.value || "").trim()) return;
+  if (accountResolving) return;
+  if (accountResolveTimer) clearTimeout(accountResolveTimer);
+  accountResolveTimer = setTimeout(async () => {
+    accountResolving = true;
+    try {
+      await resolveAccountIndex();
+    } catch (e) {
+      console.warn(e);
+    } finally {
+      accountResolving = false;
+    }
+  }, 500);
 }
 
 function syncSimulateFillState() {
@@ -491,13 +512,27 @@ function fillConfig(cfg) {
   els.exL1.value = ex.l1_address || "";
   els.exAccount.value = ex.account_index == null ? "" : String(ex.account_index);
   els.exKeyIndex.value = ex.api_key_index == null ? "" : String(ex.api_key_index);
-  els.exRemember.value = String(Boolean(ex.remember_secrets));
-  els.exApiKeyHint.textContent = ex.api_private_key_set ? "已保存（加密）" : "未保存";
-  els.exEthKeyHint.textContent = ex.eth_private_key_set ? "已保存（加密）" : "未保存";
-  els.pxL1.value = ex.paradex_l1_address || "";
-  els.pxL2.value = ex.paradex_l2_address || "";
-  els.pxL1KeyHint.textContent = ex.paradex_l1_private_key_set ? "已保存（加密）" : "未保存";
-  els.pxL2KeyHint.textContent = ex.paradex_l2_private_key_set ? "已保存（加密）" : "未保存";
+  if (els.exRemember) {
+    els.exRemember.value = String(Boolean(ex.remember_secrets));
+  }
+  if (els.exApiKeyHint) {
+    els.exApiKeyHint.textContent = ex.api_private_key_set ? "已保存（加密）" : "未保存";
+  }
+  if (els.exEthKeyHint) {
+    els.exEthKeyHint.textContent = ex.eth_private_key_set ? "已保存（加密）" : "未保存";
+  }
+  if (els.pxL1) {
+    els.pxL1.value = ex.paradex_l1_address || "";
+  }
+  if (els.pxL2) {
+    els.pxL2.value = ex.paradex_l2_address || "";
+  }
+  if (els.pxL1KeyHint) {
+    els.pxL1KeyHint.textContent = ex.paradex_l1_private_key_set ? "已保存（加密）" : "未保存";
+  }
+  if (els.pxL2KeyHint) {
+    els.pxL2KeyHint.textContent = ex.paradex_l2_private_key_set ? "已保存（加密）" : "未保存";
+  }
 
   const rt = cfg.runtime || {};
   els.runtimeDryRun.value = String(Boolean(rt.dry_run));
@@ -539,6 +574,7 @@ function fillConfig(cfg) {
   updateOrdersSymbolOptions();
 
   applyExchangeUI();
+  scheduleResolveAccountIndex();
 }
 
 async function loadConfig() {
@@ -550,31 +586,37 @@ async function saveConfig() {
   const exchange = {
     name: currentExchange(),
     env: els.exEnv.value,
-    remember_secrets: els.exRemember.value === "true",
+    remember_secrets: els.exRemember ? els.exRemember.value === "true" : true,
   };
   if (exchange.name === "paradex") {
-    exchange.paradex_l1_address = els.pxL1.value.trim();
-    exchange.paradex_l2_address = els.pxL2.value.trim();
-    const l1_key = els.pxL1Key.value.trim();
-    const l2_key = els.pxL2Key.value.trim();
-    if (l1_key) exchange.paradex_l1_private_key = l1_key;
+    exchange.paradex_l1_address = "";
+    exchange.paradex_l2_address = els.pxL2 ? els.pxL2.value.trim() : "";
+    const l2_key = els.pxL2Key ? els.pxL2Key.value.trim() : "";
     if (l2_key) exchange.paradex_l2_private_key = l2_key;
   } else {
     exchange.l1_address = els.exL1.value.trim();
     exchange.account_index = els.exAccount.value.trim() ? Math.floor(Number(els.exAccount.value.trim())) : null;
     exchange.api_key_index = els.exKeyIndex.value.trim() ? Math.floor(Number(els.exKeyIndex.value.trim())) : null;
     const api_private_key = els.exApiKey.value.trim();
-    const eth_private_key = els.exEthKey.value.trim();
+    const eth_private_key = els.exEthKey ? els.exEthKey.value.trim() : "";
     if (api_private_key) exchange.api_private_key = api_private_key;
     if (eth_private_key) exchange.eth_private_key = eth_private_key;
+    if (!exchange.account_index && exchange.l1_address) {
+      try {
+        await resolveAccountIndex();
+      } catch (e) {
+        console.warn(e);
+      }
+      exchange.account_index = els.exAccount.value.trim() ? Math.floor(Number(els.exAccount.value.trim())) : null;
+    }
   }
 
   const resp = await apiFetch("/api/config", { method: "POST", body: { exchange } });
   fillConfig(resp.config || {});
   els.exApiKey.value = "";
-  els.exEthKey.value = "";
-  els.pxL1Key.value = "";
-  els.pxL2Key.value = "";
+  if (els.exEthKey) els.exEthKey.value = "";
+  if (els.pxL1Key) els.pxL1Key.value = "";
+  if (els.pxL2Key) els.pxL2Key.value = "";
 }
 
 function numOrNull(v) {
@@ -842,6 +884,15 @@ function wire() {
     els.exName.addEventListener("change", () => {
       lastMarkets = [];
       applyExchangeUI();
+      scheduleResolveAccountIndex();
+    });
+  }
+  if (els.exL1) {
+    els.exL1.addEventListener("blur", () => {
+      scheduleResolveAccountIndex();
+    });
+    els.exL1.addEventListener("change", () => {
+      scheduleResolveAccountIndex();
     });
   }
   if (els.runtimeDryRun) {
@@ -912,13 +963,6 @@ function wire() {
   els.btnSaveStrategies.addEventListener("click", async () => {
     try {
       await saveStrategies();
-    } catch (e) {
-      alert(e.message);
-    }
-  });
-  els.btnResolveAccount.addEventListener("click", async () => {
-    try {
-      await resolveAccountIndex();
     } catch (e) {
       alert(e.message);
     }

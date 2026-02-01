@@ -38,40 +38,31 @@
         <div class="card section page-section active" id="section-exchange">
           <h2>交易所配置</h2>
           <div class="row">
+          <div>
+            <label>交易所</label>
+            <select id="ex-name">
+              <option value="lighter">Lighter</option>
+              <option value="paradex">Paradex</option>
+            </select>
+          </div>
+        </div>
+        <input id="ex-env" type="hidden" value="mainnet" />
+
+        <div id="lighter-fields">
+          <div class="row">
             <div>
-              <label>交易所</label>
-              <select id="ex-name">
-                <option value="lighter">Lighter</option>
-                <option value="paradex">Paradex</option>
-              </select>
+              <label>L1 地址</label>
+              <input id="ex-l1" placeholder="0x..." />
             </div>
             <div>
-              <label>网络</label>
-              <select id="ex-env">
-                <option value="mainnet">mainnet</option>
-                <option value="testnet">testnet</option>
-              </select>
+              <label>account_index（自动）</label>
+              <input id="ex-account" placeholder="自动查询，可手动调整" />
+              <div class="hint">根据 L1 地址自动查询并填充。</div>
             </div>
           </div>
-
-          <div id="lighter-fields">
-            <div class="row">
-              <div>
-                <label>L1 地址</label>
-                <input id="ex-l1" placeholder="0x..." />
-              </div>
-              <div>
-                <label>account_index</label>
-                <input id="ex-account" placeholder="可手填，后续会支持自动查询" />
-                <div class="btns" style="margin-top: 8px">
-                  <button id="btn-resolve-account">自动查询</button>
-                </div>
-                <div class="hint">会根据 L1 地址调用公开接口查询主账户的 account_index。</div>
-              </div>
-            </div>
-            <div class="row">
-              <div>
-                <label>api_key_index</label>
+          <div class="row">
+            <div>
+              <label>api_key_index</label>
                 <input id="ex-key-index" placeholder="例如 3" />
               </div>
               <div>
@@ -80,35 +71,16 @@
                 <div class="hint" id="ex-api-key-hint"></div>
               </div>
             </div>
-            <div class="row">
-              <div>
-                <label>ETH 私钥（可选）</label>
-                <input id="ex-eth-key" type="password" placeholder="留空表示不修改" />
-                <div class="hint" id="ex-eth-key-hint"></div>
-              </div>
-              <div></div>
-            </div>
-          </div>
+        </div>
 
-          <div id="paradex-fields" hidden>
-            <div class="row">
-              <div>
-                <label>L1 地址（可选）</label>
-                <input id="px-l1" placeholder="0x..." />
-              </div>
-              <div>
-                <label>L1 私钥（可选）</label>
-                <input id="px-l1-key" type="password" placeholder="留空表示不修改" />
-                <div class="hint" id="px-l1-key-hint"></div>
-              </div>
+        <div id="paradex-fields" hidden>
+          <div class="row">
+            <div>
+              <label>L2 地址（推荐）</label>
+              <input id="px-l2" placeholder="0x..." />
+              <div class="hint">推荐使用 L2 子密钥（subkey），只填 L2 地址与 L2 私钥即可。</div>
             </div>
-            <div class="row">
-              <div>
-                <label>L2 地址（推荐）</label>
-                <input id="px-l2" placeholder="0x..." />
-                <div class="hint">推荐使用 L2 子密钥（subkey），只填 L2 地址与 L2 私钥即可。</div>
-              </div>
-              <div>
+            <div>
                 <label>L2 私钥（推荐）</label>
                 <input id="px-l2-key" type="password" placeholder="留空表示不修改" />
                 <div class="hint" id="px-l2-key-hint"></div>
@@ -116,19 +88,9 @@
             </div>
           </div>
 
-          <div class="row">
-            <div>
-              <label>记住密钥</label>
-              <select id="ex-remember">
-                <option value="true">记住（加密落盘）</option>
-                <option value="false">不记住（仅本次运行）</option>
-              </select>
-              <div class="hint">选择“不记住”时，重启后需要重新输入密钥。</div>
-            </div>
-          </div>
-          <div class="btns">
-            <button class="primary" id="btn-save-config">保存配置</button>
-            <button id="btn-fetch-markets">拉取市场列表</button>
+        <div class="btns">
+          <button class="primary" id="btn-save-config">保存配置</button>
+          <button id="btn-fetch-markets">拉取市场列表</button>
             <button id="btn-test-conn">测试连接</button>
           </div>
           <div class="row">

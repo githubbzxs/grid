@@ -319,9 +319,11 @@ class BotManager:
 
     @staticmethod
     def _sim_enabled(runtime: Dict[str, Any]) -> bool:
-        if not bool(runtime.get("dry_run", True)):
-            return False
-        return bool(runtime.get("simulate_fill", False))
+        return bool(runtime.get("dry_run", True))
+
+    @staticmethod
+    def _sim_fill_enabled(runtime: Dict[str, Any]) -> bool:
+        return bool(runtime.get("dry_run", True)) and bool(runtime.get("simulate_fill", False))
 
     def _sim_state(self, symbol: str) -> SimState:
         sym = symbol.upper()
@@ -470,6 +472,7 @@ class BotManager:
                 runtime = cfg.get("runtime", {}) or {}
                 dry_run = bool(runtime.get("dry_run", True))
                 simulate = self._sim_enabled(runtime)
+                simulate_fill = self._sim_fill_enabled(runtime)
                 interval_ms = runtime.get("loop_interval_ms", 100)
                 try:
                     interval_ms = float(interval_ms)
@@ -524,7 +527,8 @@ class BotManager:
                 now_ms = _now_ms()
                 if simulate:
                     self._sim_update_mid(symbol, mid)
-                    self._sim_match_orders(symbol, bid, ask, now_ms)
+                    if simulate_fill:
+                        self._sim_match_orders(symbol, bid, ask, now_ms)
                 start_ms = self._start_ms.get(symbol)
                 if start_ms is None:
                     status = self._status.get(symbol)
@@ -629,9 +633,9 @@ class BotManager:
                     pnl = await self._position_pnl(trader, market_id, symbol, simulate=simulate)
                     if pnl is not None and pnl >= 0:
                         await self._cancel_grid_orders(symbol, trader, market_id, simulate=simulate)
-                        if simulate:
+                        if simulate_fill:
                             self._sim_market_close(symbol, mid)
-                        else:
+                        elif not simulate:
                             await self._market_close_position(symbol, trader, market_id, pos_base, meta)
                         await self._record_history(trader, [symbol], "stop_signal", stop_reason)
                         await self._update_status(
@@ -882,7 +886,7 @@ class BotManager:
                             except Exception as exc:
                                 self._logbus.publish(f"order.create.error symbol={symbol} id={oid} err={type(exc).__name__}:{exc}")
 
-                if simulate:
+                if simulate_fill:
                     msg = "模拟成交"
                 else:
                     msg = "模拟运行" if dry_run else "实盘运行"
