@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -22,6 +23,14 @@ from app.strategies.grid.ids import (
     grid_prefix,
     is_grid_client_order,
 )
+
+GRID_MODE_DYNAMIC = "dynamic"
+GRID_MODE_AS = "as"
+DEFAULT_AS_GAMMA = Decimal("0.1")
+DEFAULT_AS_K = Decimal("1.5")
+DEFAULT_AS_TAU_SECONDS = Decimal("30")
+DEFAULT_AS_VOL_POINTS = 60
+DEFAULT_AS_MAX_STEP_MULT = Decimal("10")
 
 
 def _now_iso() -> str:
@@ -83,6 +92,36 @@ def _trade_ts_ms(value: Any) -> Optional[int]:
     if ts < 10_000_000_000:
         return ts * 1000
     return ts
+
+
+def _normalize_grid_mode(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in (
+        "as",
+        "as_grid",
+        "as-grid",
+        "as网格",
+        "avellaneda",
+        "avellaneda_stoikov",
+        "avellaneda-stoikov",
+        "stoikov",
+    ):
+        return GRID_MODE_AS
+    return GRID_MODE_DYNAMIC
+
+
+def _as_param_decimal(strat: Dict[str, Any], key: str, default: Decimal) -> Decimal:
+    value = _safe_decimal(strat.get(key))
+    if value <= 0:
+        return default
+    return value
+
+
+def _as_param_int(strat: Dict[str, Any], key: str, default: int, min_value: int) -> int:
+    value = _safe_int(strat.get(key), default)
+    if value < min_value:
+        return default
+    return value
 
 
 def _calc_base_qty(mode: str, value: Decimal, price: Decimal) -> Decimal:
@@ -245,6 +284,7 @@ class BotManager:
         self._pnl_cache: Dict[str, tuple[int, Decimal]] = {}
         self._base_pnl: Dict[str, Decimal] = {}
         self._sim_states: Dict[str, SimState] = {}
+        self._mid_history: Dict[str, list[tuple[int, Decimal]]] = {}
         self._history = HistoryStore(self._config.path.parent / "runtime_history.jsonl")
         self._history_recorded: set[str] = set()
 
@@ -368,6 +408,76 @@ class BotManager:
     def _sim_update_mid(self, symbol: str, mid: Decimal) -> None:
         self._sim_state(symbol).last_mid = mid
 
+    def _append_mid_history(self, symbol: str, ts_ms: int, mid: Decimal, max_points: int) -> list[tuple[int, Decimal]]:
+        history = self._mid_history.get(symbol)
+        if history is None:
+            history = []
+            self._mid_history[symbol] = history
+        history.append((ts_ms, mid))
+        if max_points > 0 and len(history) > max_points:
+            del history[:-max_points]
+        return history
+
+    def _calc_as_sigma(self, history: list[tuple[int, Decimal]]) -> Decimal:
+        if len(history) < 2:
+            return Decimal(0)
+        normalized: list[float] = []
+        for (ts0, p0), (ts1, p1) in zip(history, history[1:]):
+            dt = (ts1 - ts0) / 1000.0
+            if dt <= 0:
+                continue
+            delta = float(p1 - p0)
+            normalized.append(delta / math.sqrt(dt))
+        if len(normalized) < 2:
+            return Decimal(0)
+        mean = sum(normalized) / len(normalized)
+        var = sum((x - mean) ** 2 for x in normalized) / (len(normalized) - 1)
+        if var < 0:
+            var = 0
+        sigma = math.sqrt(var)
+        return Decimal(str(sigma))
+
+    def _calc_as_center_step(
+        self,
+        symbol: str,
+        mid: Decimal,
+        pos_base: Decimal,
+        min_step: Decimal,
+        strat: Dict[str, Any],
+        meta: MarketMeta,
+        now_ms: int,
+    ) -> tuple[Decimal, Decimal]:
+        gamma = _as_param_decimal(strat, "as_gamma", DEFAULT_AS_GAMMA)
+        k = _as_param_decimal(strat, "as_k", DEFAULT_AS_K)
+        tau = _as_param_decimal(strat, "as_tau_seconds", DEFAULT_AS_TAU_SECONDS)
+        vol_points = _as_param_int(strat, "as_vol_points", DEFAULT_AS_VOL_POINTS, 5)
+        max_step_mult = _as_param_decimal(strat, "as_max_step_multiplier", DEFAULT_AS_MAX_STEP_MULT)
+
+        history = self._append_mid_history(symbol, now_ms, mid, vol_points + 1)
+        sigma = self._calc_as_sigma(history)
+
+        gamma_f = float(gamma)
+        k_f = float(k)
+        tau_f = float(tau)
+        sigma_f = float(sigma)
+        pos_f = float(pos_base)
+        mid_f = float(mid)
+
+        if gamma_f <= 0 or k_f <= 0 or tau_f <= 0:
+            return _quantize(mid, meta.price_decimals, ROUND_HALF_UP), min_step
+
+        # AS 模型：r = S - q * γ * σ^2 * τ，δ* = γ * σ^2 * τ + (2/γ) ln(1 + γ/k)
+        spread = gamma_f * (sigma_f ** 2) * tau_f + (2.0 / gamma_f) * math.log(1.0 + (gamma_f / k_f))
+        step = Decimal(str(max(spread / 2.0, float(min_step))))
+        if min_step > 0 and max_step_mult > 0:
+            max_step = min_step * max_step_mult
+            if step > max_step:
+                step = max_step
+
+        center = Decimal(str(mid_f - pos_f * gamma_f * (sigma_f ** 2) * tau_f))
+        center = _quantize(center, meta.price_decimals, ROUND_HALF_UP)
+        return center, step
+
     def _sim_create_order(
         self,
         symbol: str,
@@ -486,6 +596,7 @@ class BotManager:
                 stop_after_volume = _safe_decimal(runtime.get("stop_after_volume") or 0)
                 stop_check_interval_ms = _safe_int(runtime.get("stop_check_interval_ms"), 1000)
                 strat = (cfg.get("strategies", {}) or {}).get(symbol, {}) or {}
+                grid_mode = _normalize_grid_mode(strat.get("grid_mode"))
 
                 if not bool(strat.get("enabled", True)):
                     await self._update_status(symbol, running=True, message="已禁用", last_tick_at=_now_iso())
@@ -514,6 +625,7 @@ class BotManager:
                 if step <= 0:
                     await self._update_status(symbol, running=True, message="grid_step 必须大于 0", last_tick_at=_now_iso(), market_id=market_id)
                     continue
+                min_step = step
 
                 meta = await trader.market_meta(market_id)
                 bid, ask = await trader.best_bid_ask(market_id)
@@ -522,8 +634,6 @@ class BotManager:
                     continue
 
                 mid = (bid + ask) / 2
-                center = (mid / step).to_integral_value(rounding=ROUND_HALF_UP) * step
-                center = _quantize(center, meta.price_decimals, ROUND_HALF_UP)
 
                 now_ms = _now_ms()
                 if simulate:
@@ -549,7 +659,7 @@ class BotManager:
                 if reduce_mult < 1:
                     reduce_mult = Decimal(1)
 
-                need_position = max_pos > 0 or stop_signal or stop_after_minutes > 0 or stop_after_volume > 0
+                need_position = max_pos > 0 or stop_signal or stop_after_minutes > 0 or stop_after_volume > 0 or grid_mode == GRID_MODE_AS
                 if need_position:
                     if simulate:
                         pos_base = self.sim_position_base(symbol)
@@ -578,6 +688,22 @@ class BotManager:
                             reduce_side = "ask"
                         elif pos_base < 0:
                             reduce_side = "bid"
+
+                if grid_mode == GRID_MODE_AS:
+                    pos_for_as = pos_base if pos_base is not None else Decimal(0)
+                    center, step = self._calc_as_center_step(
+                        symbol,
+                        mid,
+                        pos_for_as,
+                        min_step,
+                        strat,
+                        meta,
+                        now_ms,
+                    )
+                else:
+                    center = (mid / min_step).to_integral_value(rounding=ROUND_HALF_UP) * min_step
+                    center = _quantize(center, meta.price_decimals, ROUND_HALF_UP)
+                    step = min_step
 
                 if not stop_signal and (stop_after_minutes > 0 or stop_after_volume > 0):
                     interval_ms = max(200, stop_check_interval_ms)
@@ -945,7 +1071,7 @@ class BotManager:
         while pages < max_pages and not reached_old:
             resp = await trader._order_api.trades(
                 sort_by="timestamp",
-                limit=200,
+                limit=100,
                 market_id=int(market_id),
                 account_index=int(trader.account_index),
                 sort_dir="desc",

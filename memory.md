@@ -7,13 +7,12 @@
 
 **当前阶段**: [ ✅ 已交付 ]
 **当前任务**:
-- [x] 全面支持 GRVT 交易所（WS 行情 + SDK 下单）。
-- [x] 策略配置区展示交易所限制（精度/最小下单量/tick）。
-- [x] market_id 随交易所切换自动刷新与填充。
-- [x] README 更新并补充 GRVT 使用说明。
+- [x] 修复 Lighter 的 OrderApi.trades limit 规则（强制 100）。
+- [x] 新增 AS 网格模式（Avellaneda-Stoikov）与前端模式选择。
+- [x] README 补充 AS 网格参数说明。
 
 **下一步计划**:
-- [ ] 如 GRVT 接入有报错，补充更细的错误提示与日志。
+- [ ] 如需更细化 AS 参数控制，可扩展 WebUI 输入项。
 
 ## 2. 🛠 Tech Stack & Config (技术栈与配置)
 
@@ -43,11 +42,14 @@
 **核心设计模式**:
 - 配置由 `app/core/config_store` 统一读写。
 - 交易所适配与策略实现分层组织。
+- AS 网格通过运行时计算中心价与价差，兼容现有网格下单逻辑。
 
 ## 4. 📝 Key Decisions Log (关键决策记录)
 
 - **[2026-02-01]**: GRVT 行情使用 WS、下单使用 SDK，策略区增加交易所限制提示。
 - **[2026-02-01]**: 网格补单策略改为优先补中心附近档位。
+- **[2026-02-01]**: 新增 AS 网格模式，基于 Avellaneda-Stoikov 计算中心价与价差。
+- **[2026-02-01]**: Lighter 的 OrderApi.trades limit 固定为 100。
 
 ## 5. ⚠️ Known Issues & Constraints (已知问题与约束)
 
@@ -64,4 +66,4 @@
 
 ---
 
-**Last Updated**: 2026-02-01 18:40
+**Last Updated**: 2026-02-01 19:50

@@ -173,6 +173,7 @@ function strategyDefaults() {
     symbol: "",
     enabled: true,
     market_id: null,
+    grid_mode: "dynamic",
     grid_step: 0,
     levels_up: 10,
     levels_down: 10,
@@ -220,6 +221,7 @@ function strategyRowTemplate(strategy) {
   const symbol = escapeHtml(strategy.symbol || "");
   const enabled = strategy.enabled ? "checked" : "";
   const market = escapeHtml(valueText(strategy.market_id));
+  const gridMode = strategy.grid_mode === "as" ? "as" : "dynamic";
   const step = escapeHtml(valueText(strategy.grid_step));
   const up = escapeHtml(valueText(strategy.levels_up));
   const down = escapeHtml(valueText(strategy.levels_down));
@@ -233,6 +235,12 @@ function strategyRowTemplate(strategy) {
     <td data-label="启用"><input class="st-enabled" type="checkbox" ${enabled} /></td>
     <td data-label="market_id"><input class="st-market" placeholder="例如 0 或 ETH-USD-PERP" value="${market}" /></td>
     <td data-label="交易所限制"><div class="st-limit hint">等待 market_id 与市场列表</div></td>
+    <td data-label="网格模式">
+      <select class="st-grid-mode">
+        <option value="dynamic" ${gridMode === "dynamic" ? "selected" : ""}>动态网格</option>
+        <option value="as" ${gridMode === "as" ? "selected" : ""}>AS网格</option>
+      </select>
+    </td>
     <td data-label="价差"><input class="st-step" placeholder="例如 5" value="${step}" /></td>
     <td data-label="上层"><input class="st-up" placeholder="10" value="${up}" /></td>
     <td data-label="下层"><input class="st-down" placeholder="10" value="${down}" /></td>
@@ -315,6 +323,7 @@ function collectStrategiesFromTable() {
       symbol,
       enabled: Boolean(row.querySelector(".st-enabled")?.checked),
       market_id: marketIdValue(row.querySelector(".st-market")),
+      grid_mode: row.querySelector(".st-grid-mode")?.value || "dynamic",
       grid_step: numOrZero(row.querySelector(".st-step")?.value),
       levels_up: Math.floor(numOrZero(row.querySelector(".st-up")?.value)),
       levels_down: Math.floor(numOrZero(row.querySelector(".st-down")?.value)),

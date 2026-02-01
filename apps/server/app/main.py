@@ -340,7 +340,7 @@ async def _lighter_trades_since(
     while pages < max_pages and not reached_old:
         resp = await trader._order_api.trades(
             sort_by="timestamp",
-            limit=200,
+            limit=100,
             market_id=int(market_id),
             account_index=int(trader.account_index),
             sort_dir="desc",
