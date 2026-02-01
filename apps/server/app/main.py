@@ -18,6 +18,9 @@ from starlette.responses import StreamingResponse
 from app.core.config_store import ConfigStore, default_data_dir
 from app.core.logbus import LogBus
 from app.core.security import decrypt_str, derive_fernet, encrypt_str, new_salt_b64, password_hash_b64, verify_password
+from app.exchanges.grvt.market_ws import _parse_price as grvt_parse_price
+from app.exchanges.grvt.sdk_ops import fetch_perp_markets as grvt_fetch_perp_markets, test_connection as grvt_test_connection
+from app.exchanges.grvt.trader import GrvtTrader
 from app.exchanges.lighter.public_api import LighterPublicClient, base_url as lighter_base_url
 from app.exchanges.lighter.sdk_ops import fetch_perp_markets as lighter_fetch_perp_markets, test_connection as lighter_test_connection
 from app.exchanges.lighter.trader import LighterTrader
@@ -70,7 +73,11 @@ def require_unlocked(request: Request) -> Fernet:
 def _exchange_name(config: Dict[str, Any], override: Optional[str] = None) -> str:
     raw = override if override is not None else (config.get("exchange", {}) or {}).get("name")
     name = str(raw or "lighter").strip().lower()
-    return "paradex" if name == "paradex" else "lighter"
+    if name == "paradex":
+        return "paradex"
+    if name == "grvt":
+        return "grvt"
+    return "lighter"
 
 
 def _safe_str(value: Any) -> Optional[str]:
@@ -260,6 +267,65 @@ def _paradex_positions_map(trader: ParadexTrader) -> Dict[str, Dict[str, Decimal
     return result
 
 
+async def _grvt_positions_map(trader: GrvtTrader) -> Dict[str, Dict[str, Decimal]]:
+    return await trader.positions_snapshot()
+
+
+async def _grvt_trades_since(
+    trader: GrvtTrader,
+    market: str,
+    start_ms: int,
+    end_ms: int,
+    max_pages: int = 5,
+) -> tuple[Decimal, int]:
+    total = Decimal(0)
+    count = 0
+    cursor = None
+    pages = 0
+    start_ns = int(start_ms) * 1_000_000
+    end_ns = int(end_ms) * 1_000_000
+
+    while pages < max_pages:
+        params: Dict[str, Any] = {"end_time": end_ns}
+        if cursor:
+            params = {"cursor": cursor}
+        resp = await trader._api.fetch_my_trades(symbol=str(market), since=start_ns, limit=200, params=params)
+        results = resp.get("result") if isinstance(resp, dict) else None
+        results = results or []
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            ts_raw = item.get("event_time") or item.get("timestamp") or item.get("time")
+            try:
+                ts_val = int(ts_raw)
+            except Exception:
+                ts_val = None
+            ts_ms = None
+            if ts_val is not None:
+                if ts_val > 10_000_000_000_000:
+                    ts_ms = ts_val // 1_000_000
+                elif ts_val > 10_000_000_000:
+                    ts_ms = ts_val
+                else:
+                    ts_ms = ts_val * 1000
+            if ts_ms is not None and (ts_ms < start_ms or ts_ms > end_ms):
+                continue
+            price = grvt_parse_price(item.get("price") or item.get("fill_price"))
+            if price is None:
+                price = _safe_decimal(item.get("price") or 0)
+            size = _safe_decimal(item.get("size") or item.get("amount") or 0)
+            total += abs(price * size)
+            count += 1
+
+        cursor = resp.get("next") if isinstance(resp, dict) else None
+        if not cursor:
+            cursor = resp.get("next_cursor") if isinstance(resp, dict) else None
+        if not cursor:
+            break
+        pages += 1
+    return total, count
+
+
 async def _lighter_trades_since(
     trader: LighterTrader,
     market_id: int,
@@ -338,10 +404,14 @@ def _mask_config(config: Dict[str, Any]) -> Dict[str, Any]:
     exchange = dict(config.get("exchange", {}))
     exchange.pop("api_private_key_enc", None)
     exchange.pop("eth_private_key_enc", None)
+    exchange.pop("grvt_api_key_enc", None)
+    exchange.pop("grvt_private_key_enc", None)
     exchange.pop("paradex_l1_private_key_enc", None)
     exchange.pop("paradex_l2_private_key_enc", None)
     exchange["api_private_key_set"] = bool(config.get("exchange", {}).get("api_private_key_enc"))
     exchange["eth_private_key_set"] = bool(config.get("exchange", {}).get("eth_private_key_enc"))
+    exchange["grvt_api_key_set"] = bool(config.get("exchange", {}).get("grvt_api_key_enc"))
+    exchange["grvt_private_key_set"] = bool(config.get("exchange", {}).get("grvt_private_key_enc"))
     exchange["paradex_l1_private_key_set"] = bool(config.get("exchange", {}).get("paradex_l1_private_key_enc"))
     exchange["paradex_l2_private_key_set"] = bool(config.get("exchange", {}).get("paradex_l2_private_key_enc"))
     result = dict(config)
@@ -368,6 +438,8 @@ async def _startup() -> None:
     app.state.lighter_trader_sig = None
     app.state.paradex_trader = None
     app.state.paradex_trader_sig = None
+    app.state.grvt_trader = None
+    app.state.grvt_trader_sig = None
     app.state.runtime_stats = {}
     app.state.logbus.publish("server.start")
 
@@ -380,6 +452,9 @@ async def _shutdown() -> None:
     p_trader: Optional[ParadexTrader] = getattr(app.state, "paradex_trader", None)
     if p_trader:
         await p_trader.close()
+    g_trader: Optional[GrvtTrader] = getattr(app.state, "grvt_trader", None)
+    if g_trader:
+        await g_trader.close()
 
 
 @app.get("/")
@@ -490,6 +565,8 @@ async def update_config(
     exchange_patch = dict(patch.get("exchange") or {})
     plaintext_api_key = exchange_patch.pop("api_private_key", None)
     plaintext_eth_key = exchange_patch.pop("eth_private_key", None)
+    plaintext_grvt_api_key = exchange_patch.pop("grvt_api_key", None)
+    plaintext_grvt_private_key = exchange_patch.pop("grvt_private_key", None)
     plaintext_paradex_l1_key = exchange_patch.pop("paradex_l1_private_key", None)
     plaintext_paradex_l2_key = exchange_patch.pop("paradex_l2_private_key", None)
 
@@ -538,6 +615,22 @@ async def update_config(
         else:
             merged["exchange"]["eth_private_key_enc"] = ""
             runtime_secrets["eth_private_key"] = str(plaintext_eth_key)
+
+    if plaintext_grvt_api_key is not None:
+        if remember:
+            merged["exchange"]["grvt_api_key_enc"] = encrypt_str(fernet, str(plaintext_grvt_api_key))
+            runtime_secrets.pop("grvt_api_key", None)
+        else:
+            merged["exchange"]["grvt_api_key_enc"] = ""
+            runtime_secrets["grvt_api_key"] = str(plaintext_grvt_api_key)
+
+    if plaintext_grvt_private_key is not None:
+        if remember:
+            merged["exchange"]["grvt_private_key_enc"] = encrypt_str(fernet, str(plaintext_grvt_private_key))
+            runtime_secrets.pop("grvt_private_key", None)
+        else:
+            merged["exchange"]["grvt_private_key_enc"] = ""
+            runtime_secrets["grvt_private_key"] = str(plaintext_grvt_private_key)
 
     if plaintext_paradex_l1_key is not None:
         if remember:
@@ -613,6 +706,8 @@ async def bots_emergency_stop(request: Request, _: str = Depends(require_auth)) 
     trader: Optional[Trader]
     if exchange_name == "paradex":
         trader = request.app.state.paradex_trader
+    elif exchange_name == "grvt":
+        trader = request.app.state.grvt_trader
     else:
         trader = request.app.state.lighter_trader
 
@@ -817,6 +912,8 @@ async def runtime_status(
     positions_map: Dict[Any, Dict[str, Decimal]]
     if name == "paradex" and isinstance(trader, ParadexTrader):
         positions_map = _paradex_positions_map(trader)
+    elif name == "grvt" and isinstance(trader, GrvtTrader):
+        positions_map = await _grvt_positions_map(trader)
     elif isinstance(trader, LighterTrader):
         positions_map = await _lighter_positions_map(trader)
     else:
@@ -848,7 +945,7 @@ async def runtime_status(
         market_id = strat.get("market_id")
         if market_id is None or (isinstance(market_id, str) and not market_id.strip()):
             market_id = status.get("market_id")
-        if name == "paradex" and market_id is not None:
+        if name in {"paradex", "grvt"} and market_id is not None:
             market_id = str(market_id)
         if name == "lighter" and isinstance(market_id, str):
             try:
@@ -873,6 +970,8 @@ async def runtime_status(
         try:
             if name == "paradex" and isinstance(trader, ParadexTrader) and market_id is not None:
                 volume, trade_count = _paradex_fills_since(trader, str(market_id), start_ms, now_ms)
+            elif name == "grvt" and isinstance(trader, GrvtTrader) and market_id is not None:
+                volume, trade_count = await _grvt_trades_since(trader, str(market_id), start_ms, now_ms)
             elif isinstance(trader, LighterTrader) and isinstance(market_id, int):
                 volume, trade_count = await _lighter_trades_since(trader, int(market_id), start_ms)
         except Exception as exc:
@@ -941,6 +1040,8 @@ async def exchange_markets(
     try:
         if name == "paradex":
             items = await paradex_fetch_perp_markets(env)
+        elif name == "grvt":
+            items = await grvt_fetch_perp_markets(env)
         else:
             items = await lighter_fetch_perp_markets(env)
     except Exception as exc:
@@ -970,6 +1071,19 @@ async def exchange_test_connection(
             result = await paradex_test_connection(env, l1_address, l1_key, l2_address, l2_key)
         except Exception as exc:
             request.app.state.logbus.publish(f"paradex.test_connection error={type(exc).__name__}:{exc}")
+            raise HTTPException(status_code=502, detail="测试失败")
+        return {"exchange": name, "result": result}
+
+    if name == "grvt":
+        account_id = _safe_str(ex.get("grvt_account_id"))
+        api_key = _get_secret(request, "grvt_api_key")
+        private_key = _get_secret(request, "grvt_private_key")
+        if not account_id or not api_key or not private_key:
+            raise HTTPException(status_code=400, detail="请填写 GRVT account_id、API Key 与私钥")
+        try:
+            result = await grvt_test_connection(env, account_id, api_key, private_key)
+        except Exception as exc:
+            request.app.state.logbus.publish(f"grvt.test_connection error={type(exc).__name__}:{exc}")
             raise HTTPException(status_code=502, detail="测试失败")
         return {"exchange": name, "result": result}
 
@@ -1034,6 +1148,17 @@ async def exchange_account_snapshot(
     if name == "paradex":
         trader = await _ensure_paradex_trader(request)
         summary = trader._api.fetch_account_summary()
+        if hasattr(summary, "model_dump"):
+            data = summary.model_dump()
+        elif hasattr(summary, "to_dict"):
+            data = summary.to_dict()
+        else:
+            data = getattr(summary, "__dict__", {"raw": str(summary)})
+        return {"exchange": name, "account": data}
+
+    if name == "grvt":
+        trader = await _ensure_grvt_trader(request)
+        summary = await trader._api.get_account_summary()
         if hasattr(summary, "model_dump"):
             data = summary.model_dump()
         elif hasattr(summary, "to_dict"):
@@ -1189,6 +1314,8 @@ def _get_secret(request: Request, name: str) -> Optional[str]:
     enc_field = {
         "api_private_key": "api_private_key_enc",
         "eth_private_key": "eth_private_key_enc",
+        "grvt_api_key": "grvt_api_key_enc",
+        "grvt_private_key": "grvt_private_key_enc",
         "paradex_l1_private_key": "paradex_l1_private_key_enc",
         "paradex_l2_private_key": "paradex_l2_private_key_enc",
     }.get(name)
@@ -1240,11 +1367,48 @@ async def _ensure_paradex_trader(request: Request) -> ParadexTrader:
     return trader
 
 
+async def _ensure_grvt_trader(request: Request) -> GrvtTrader:
+    config: Dict[str, Any] = request.app.state.config.read()
+    ex = config.get("exchange", {})
+    env = str(ex.get("env") or "mainnet")
+    account_id = _safe_str(ex.get("grvt_account_id"))
+    api_key = _get_secret(request, "grvt_api_key")
+    private_key = _get_secret(request, "grvt_private_key")
+    if not account_id or not api_key or not private_key:
+        raise HTTPException(status_code=400, detail="请填写 GRVT account_id、API Key 与私钥")
+
+    sig = (env, account_id, _secret_fingerprint(api_key), _secret_fingerprint(private_key))
+    existing: Optional[GrvtTrader] = request.app.state.grvt_trader
+    existing_sig = request.app.state.grvt_trader_sig
+    if existing and existing_sig == sig:
+        return existing
+
+    if existing:
+        await existing.close()
+
+    trader = GrvtTrader(
+        env=env,
+        trading_account_id=account_id,
+        api_key=api_key,
+        private_key=private_key,
+    )
+    err = await trader.verify()
+    if err is not None:
+        await trader.close()
+        raise HTTPException(status_code=400, detail=f"API Key 验证失败：{err}")
+
+    request.app.state.grvt_trader = trader
+    request.app.state.grvt_trader_sig = sig
+    return trader
+
+
 async def _ensure_trader(request: Request, exchange: Optional[str] = None) -> Trader:
     config: Dict[str, Any] = request.app.state.config.read()
     name = _exchange_name(config, exchange)
     if name == "paradex":
         return await _ensure_paradex_trader(request)
+    if name == "grvt":
+        return await _ensure_grvt_trader(request)
     return await _ensure_lighter_trader(request)
 
 

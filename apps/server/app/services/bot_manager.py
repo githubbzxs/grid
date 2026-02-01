@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 
 from app.core.config_store import ConfigStore
 from app.core.logbus import LogBus
+from app.exchanges.grvt.trader import GrvtTrader
 from app.exchanges.lighter.trader import LighterTrader
 from app.exchanges.paradex.trader import ParadexTrader
 from app.exchanges.types import MarketMeta, Trader
@@ -925,6 +926,8 @@ class BotManager:
             return await self._lighter_trades_since(trader, int(market_id), start_ms)
         if isinstance(trader, ParadexTrader):
             return self._paradex_fills_since(trader, str(market_id), start_ms, end_ms)
+        if isinstance(trader, GrvtTrader):
+            return await trader.fills_since(str(market_id), start_ms, end_ms)
         return Decimal(0), 0
 
     async def _lighter_trades_since(
@@ -1060,6 +1063,11 @@ class BotManager:
                     continue
                 pnl = _safe_decimal(item.get("realized_positional_pnl") or 0) + _safe_decimal(item.get("unrealized_pnl") or 0)
                 break
+        elif isinstance(trader, GrvtTrader):
+            positions = await trader.positions_snapshot()
+            item = positions.get(str(market_id))
+            if item:
+                pnl = _safe_decimal(item.get("pnl"))
 
         if pnl is not None and not simulate:
             self._pnl_cache[symbol] = (now_ms, pnl)
