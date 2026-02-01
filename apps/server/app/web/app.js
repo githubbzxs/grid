@@ -2,6 +2,7 @@ const els = {
   btnLogout: document.getElementById("btn-logout"),
   btnLock: document.getElementById("btn-lock"),
   appArea: document.getElementById("app-area"),
+  navSelect: document.getElementById("nav-select"),
 
   exName: document.getElementById("ex-name"),
   exEnv: document.getElementById("ex-env"),
@@ -166,23 +167,23 @@ function strategyRowTemplate(strategy) {
   const reduce = escapeHtml(valueText(strategy.reduce_order_size_multiplier));
   const mode = strategy.order_size_mode === "base" ? "base" : "notional";
   return `<tr>
-    <td><input class="st-symbol mono" placeholder="例如 BTC" value="${symbol}" /></td>
-    <td><input class="st-enabled" type="checkbox" ${enabled} /></td>
-    <td><input class="st-market" placeholder="例如 0 或 ETH-USD-PERP" value="${market}" /></td>
-    <td><input class="st-step" placeholder="例如 5" value="${step}" /></td>
-    <td><input class="st-up" placeholder="10" value="${up}" /></td>
-    <td><input class="st-down" placeholder="10" value="${down}" /></td>
-    <td>
+    <td data-label="标的"><input class="st-symbol mono" placeholder="例如 BTC" value="${symbol}" /></td>
+    <td data-label="启用"><input class="st-enabled" type="checkbox" ${enabled} /></td>
+    <td data-label="market_id"><input class="st-market" placeholder="例如 0 或 ETH-USD-PERP" value="${market}" /></td>
+    <td data-label="价差"><input class="st-step" placeholder="例如 5" value="${step}" /></td>
+    <td data-label="上层"><input class="st-up" placeholder="10" value="${up}" /></td>
+    <td data-label="下层"><input class="st-down" placeholder="10" value="${down}" /></td>
+    <td data-label="每单模式">
       <select class="st-mode">
         <option value="notional" ${mode === "notional" ? "selected" : ""}>固定名义金额</option>
         <option value="base" ${mode === "base" ? "selected" : ""}>固定币数量</option>
       </select>
     </td>
-    <td><input class="st-size" placeholder="例如 5" value="${size}" /></td>
-    <td><input class="st-maxpos" placeholder="例如 100" value="${maxpos}" /></td>
-    <td><input class="st-exitpos" placeholder="例如 80" value="${exitpos}" /></td>
-    <td><input class="st-reduce" placeholder="例如 2" value="${reduce}" /></td>
-    <td><button class="danger btn-remove-row" type="button">删除</button></td>
+    <td data-label="每单数值"><input class="st-size" placeholder="例如 5" value="${size}" /></td>
+    <td data-label="触发仓位"><input class="st-maxpos" placeholder="例如 100" value="${maxpos}" /></td>
+    <td data-label="退出仓位"><input class="st-exitpos" placeholder="例如 80" value="${exitpos}" /></td>
+    <td data-label="减仓倍数"><input class="st-reduce" placeholder="例如 2" value="${reduce}" /></td>
+    <td data-label="操作"><button class="danger btn-remove-row" type="button">删除</button></td>
   </tr>`;
 }
 
@@ -382,6 +383,9 @@ function activateSection(id) {
     const linkTarget = link.dataset.target || "";
     link.classList.toggle("active", linkTarget === target.id);
   });
+  if (els.navSelect && target) {
+    els.navSelect.value = target.id;
+  }
   if (target && window.location.hash !== `#${target.id}`) {
     history.replaceState(null, "", `#${target.id}`);
   }
@@ -397,6 +401,11 @@ function initNavigation() {
       activateSection(target);
     });
   });
+  if (els.navSelect) {
+    els.navSelect.addEventListener("change", () => {
+      activateSection(els.navSelect.value);
+    });
+  }
   activateSection(getSectionIdFromHash());
   window.addEventListener("hashchange", () => {
     activateSection(getSectionIdFromHash());

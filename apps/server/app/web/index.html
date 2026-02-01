@@ -19,6 +19,15 @@
           <a href="#section-account" data-target="section-account">账户与挂单</a>
           <a href="#section-logs" data-target="section-logs">日志</a>
         </nav>
+        <select class="nav-select" id="nav-select">
+          <option value="section-exchange">交易所配置</option>
+          <option value="section-strategy">策略配置</option>
+          <option value="section-runtime">运行控制</option>
+          <option value="section-metrics">运行统计</option>
+          <option value="section-history">历史记录</option>
+          <option value="section-account">账户与挂单</option>
+          <option value="section-logs">日志</option>
+        </select>
         <div class="top-actions">
           <button id="btn-lock">锁定</button>
           <button id="btn-logout">退出</button>
@@ -137,7 +146,7 @@
         <div class="card section page-section" id="section-strategy">
           <h2>策略配置（无限网格）</h2>
           <div class="hint">先从“perp 市场列表”里找到 market_id（Lighter 为数字，Paradex 为市场符号），拉取市场列表后会自动填充。</div>
-          <table class="table" id="strategy-table">
+          <table class="table responsive" id="strategy-table">
             <thead>
               <tr>
                 <th>标的</th>

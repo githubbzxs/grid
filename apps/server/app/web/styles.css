@@ -64,6 +64,11 @@ body {
   min-width: 0;
 }
 
+.nav-select {
+  display: none;
+  min-width: 180px;
+}
+
 .nav-links a {
   text-decoration: none;
   color: var(--muted);
@@ -153,35 +158,42 @@ body {
 
 @media (max-width: 900px) {
   .topnav {
+    flex-direction: column;
     flex-wrap: wrap;
-    align-items: center;
+    align-items: stretch;
   }
 
   .top-actions {
-    margin-left: auto;
-    justify-content: flex-end;
+    width: 100%;
+    justify-content: space-between;
   }
 
   .nav-links {
-    order: 3;
-    flex: 1 1 100%;
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    padding-top: 6px;
-  }
-
-  .nav-links a {
-    flex: 0 0 auto;
-  }
-
-  .nav-links::-webkit-scrollbar {
     display: none;
   }
 
-  .nav-links {
-    scrollbar-width: none;
-    -ms-overflow-style: none;
+  .nav-select {
+    display: block;
+    width: 100%;
   }
+
+  .wrap {
+    padding: 16px 12px 36px;
+  }
+
+  .card {
+    padding: 12px;
+  }
+
+  .btns {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .btns button {
+    width: 100%;
+  }
+}
 }
 
 .card {
@@ -317,6 +329,60 @@ button.danger {
   border-bottom: 1px solid var(--border-soft);
   padding: 8px 6px;
   text-align: left;
+}
+
+@media (max-width: 900px) {
+  .table.responsive {
+    border: 0;
+  }
+
+  .table.responsive thead {
+    display: none;
+  }
+
+  .table.responsive tbody,
+  .table.responsive tr,
+  .table.responsive td {
+    display: block;
+    width: 100%;
+  }
+
+  .table.responsive tr {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 10px;
+    margin-bottom: 12px;
+    background: var(--card-bg);
+  }
+
+  .table.responsive td {
+    border-bottom: 1px dashed var(--border-soft);
+    padding: 6px 0;
+  }
+
+  .table.responsive td:last-child {
+    border-bottom: none;
+  }
+
+  .table.responsive td::before {
+    content: attr(data-label);
+    display: block;
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+
+  .table.responsive td input,
+  .table.responsive td select,
+  .table.responsive td button {
+    width: 100%;
+    box-sizing: border-box;
+  }
+
+  .table.responsive td .st-enabled {
+    width: auto;
+    transform: scale(1.1);
+  }
 }
 
 .stats-grid {
