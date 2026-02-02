@@ -60,15 +60,13 @@
 - **GRVT 订单限制**：默认 GTT（GOOD_TILL_TIME），post_only 有效，client_order_id 必须唯一。
 - **网格类型**：动态网格与 AS 网格在 WebUI 中分表配置，后端以 `grid_mode` 区分（`dynamic` / `as`）。
 - **动态参数**：`grid_step` 固定价差。
-- **AS 参数（可选）**：`as_min_step` AS 最小价差（<=0 时自动使用最小价格刻度）。
 - **AS 参数（可选）**：`as_gamma` 风险厌恶系数，默认 0.1。
 - **AS 参数（可选）**：`as_k` 深度系数，默认 1.5。
 - **AS 参数（可选）**：`as_tau_seconds` 时间尺度（秒），默认 30。
 - **AS 参数（可选）**：`as_vol_points` 波动率采样点数，默认 60（最少 5）。
 - **AS 参数（可选）**：`as_step_multiplier` 价差乘数，默认 1。
-- **AS 参数（可选）**：`as_max_step_multiplier` 最大价差倍数，默认 10。
 - **AS 参数（可选）**：`as_max_drawdown` 最大回撤阈值（>0 启用，触发后紧急停止）。
-- **AS 价差规则**：AS 网格实际步长取 `max(as_min_step, AS 半价差)`，并受 `as_max_step_multiplier` 上限约束（旧配置中的 `grid_step` 仅作为回退）。
+- **AS 价差规则**：AS 半价差 = `(γσ²τ + (2/γ) ln(1 + γ/k)) / 2`，实际步长 = `max(半价差 * as_step_multiplier, 最小价格刻度)`。
 - **AS 挂单规则**：AS 网格仅挂两单（1 个 bid + 1 个 ask）。
 - **AS 风控**：AS 网格不使用减仓模式，使用最大回撤保护。
 

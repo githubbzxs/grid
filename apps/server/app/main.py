@@ -1398,12 +1398,18 @@ async def _ensure_grvt_trader(request: Request) -> GrvtTrader:
     if existing:
         await existing.close()
 
-    trader = GrvtTrader(
-        env=env,
-        trading_account_id=account_id,
-        api_key=api_key,
-        private_key=private_key,
-    )
+    try:
+        trader = GrvtTrader(
+            env=env,
+            trading_account_id=account_id,
+            api_key=api_key,
+            private_key=private_key,
+        )
+    except ModuleNotFoundError as exc:
+        name = getattr(exc, "name", "") or ""
+        if name.startswith("pysdk"):
+            raise HTTPException(status_code=400, detail="GRVT 依赖 pysdk 未安装，请先安装或切换交易所") from exc
+        raise
     err = await trader.verify()
     if err is not None:
         await trader.close()

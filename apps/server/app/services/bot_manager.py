@@ -31,7 +31,6 @@ DEFAULT_AS_K = Decimal("1.5")
 DEFAULT_AS_TAU_SECONDS = Decimal("30")
 DEFAULT_AS_VOL_POINTS = 60
 DEFAULT_AS_STEP_MULT = Decimal("1")
-DEFAULT_AS_MAX_STEP_MULT = Decimal("10")
 
 
 def _now_iso() -> str:
@@ -127,18 +126,6 @@ def _as_param_int(strat: Dict[str, Any], key: str, default: int, min_value: int)
 
 def _min_price_step(meta: MarketMeta) -> Decimal:
     return Decimal(1) / (Decimal(10) ** int(meta.price_decimals))
-
-
-def _as_min_step(strat: Dict[str, Any], meta: MarketMeta) -> Decimal:
-    raw = _safe_decimal(strat.get("as_min_step") or 0)
-    if raw <= 0:
-        raw = _safe_decimal(strat.get("grid_step") or 0)
-    tick = _min_price_step(meta)
-    if raw <= 0:
-        raw = tick
-    if raw < tick:
-        raw = tick
-    return _quantize(raw, meta.price_decimals, ROUND_HALF_UP)
 
 
 def _calc_base_qty(mode: str, value: Decimal, price: Decimal) -> Decimal:
@@ -462,7 +449,6 @@ class BotManager:
         symbol: str,
         mid: Decimal,
         pos_base: Decimal,
-        min_step: Decimal,
         strat: Dict[str, Any],
         meta: MarketMeta,
         now_ms: int,
@@ -472,10 +458,10 @@ class BotManager:
         tau = _as_param_decimal(strat, "as_tau_seconds", DEFAULT_AS_TAU_SECONDS)
         vol_points = _as_param_int(strat, "as_vol_points", DEFAULT_AS_VOL_POINTS, 5)
         step_mult = _as_param_decimal(strat, "as_step_multiplier", DEFAULT_AS_STEP_MULT)
-        max_step_mult = _as_param_decimal(strat, "as_max_step_multiplier", DEFAULT_AS_MAX_STEP_MULT)
 
         history = self._append_mid_history(symbol, now_ms, mid, vol_points + 1)
         sigma = self._calc_as_sigma(history)
+        tick = _min_price_step(meta)
 
         gamma_f = float(gamma)
         k_f = float(k)
@@ -485,16 +471,15 @@ class BotManager:
         mid_f = float(mid)
 
         if gamma_f <= 0 or k_f <= 0 or tau_f <= 0:
-            return _quantize(mid, meta.price_decimals, ROUND_HALF_UP), min_step
+            center = _quantize(mid, meta.price_decimals, ROUND_HALF_UP)
+            step = _quantize(tick, meta.price_decimals, ROUND_HALF_UP)
+            return center, step
 
         # AS 模型：r = S - q * γ * σ^2 * τ，δ* = γ * σ^2 * τ + (2/γ) ln(1 + γ/k)
         spread = gamma_f * (sigma_f ** 2) * tau_f + (2.0 / gamma_f) * math.log(1.0 + (gamma_f / k_f))
         step_mult_f = float(step_mult) if float(step_mult) > 0 else 1.0
-        step = Decimal(str(max((spread / 2.0) * step_mult_f, float(min_step))))
-        if min_step > 0 and max_step_mult > 0:
-            max_step = min_step * max_step_mult
-            if step > max_step:
-                step = max_step
+        step = Decimal(str(max((spread / 2.0) * step_mult_f, float(tick))))
+        step = _quantize(step, meta.price_decimals, ROUND_HALF_UP)
 
         center = Decimal(str(mid_f - pos_f * gamma_f * (sigma_f ** 2) * tau_f))
         center = _quantize(center, meta.price_decimals, ROUND_HALF_UP)
@@ -664,16 +649,7 @@ class BotManager:
 
                 step_input = _safe_decimal(strat.get("grid_step") or 0)
                 if grid_mode == GRID_MODE_AS:
-                    min_step = _as_min_step(strat, meta)
-                    if min_step <= 0:
-                        await self._update_status(
-                            symbol,
-                            running=True,
-                            message="AS 最小价差必须大于 0",
-                            last_tick_at=_now_iso(),
-                            market_id=market_id,
-                        )
-                        continue
+                    min_step = _min_price_step(meta)
                 else:
                     if step_input <= 0:
                         await self._update_status(
@@ -786,7 +762,6 @@ class BotManager:
                         symbol,
                         mid,
                         pos_for_as,
-                        min_step,
                         strat,
                         meta,
                         now_ms,

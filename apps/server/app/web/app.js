@@ -176,13 +176,8 @@ function strategyDefaults(mode = "dynamic") {
     symbol: "",
     enabled: true,
     market_id: null,
-    levels_up: 10,
-    levels_down: 10,
     order_size_mode: "notional",
     order_size_value: 5,
-    max_position_notional: 20,
-    reduce_position_notional: 0,
-    reduce_order_size_multiplier: 1,
     post_only: true,
     max_open_orders: 50,
   };
@@ -190,13 +185,11 @@ function strategyDefaults(mode = "dynamic") {
     return {
       ...base,
       grid_mode: "as",
-      as_min_step: 0,
       as_gamma: 0.1,
       as_k: 1.5,
       as_tau_seconds: 30,
       as_vol_points: 60,
       as_step_multiplier: 1,
-      as_max_step_multiplier: 10,
       as_max_drawdown: 0,
     };
   }
@@ -204,6 +197,11 @@ function strategyDefaults(mode = "dynamic") {
     ...base,
     grid_mode: "dynamic",
     grid_step: 0,
+    levels_up: 10,
+    levels_down: 10,
+    max_position_notional: 20,
+    reduce_position_notional: 0,
+    reduce_order_size_multiplier: 1,
   };
 }
 
@@ -217,8 +215,15 @@ function normalizeStrategies(raw) {
       if (!symbol || seen.has(symbol)) return;
       const mode = String(item.grid_mode || "").toLowerCase() === "as" ? "as" : "dynamic";
       const merged = { ...strategyDefaults(mode), ...item, symbol, grid_mode: mode };
-      if (mode === "as" && numOrZero(merged.as_min_step) <= 0) {
-        merged.as_min_step = numOrZero(item.as_min_step ?? item.grid_step ?? 0);
+      if (mode === "as") {
+        delete merged.as_min_step;
+        delete merged.as_max_step_multiplier;
+        delete merged.grid_step;
+        delete merged.levels_up;
+        delete merged.levels_down;
+        delete merged.max_position_notional;
+        delete merged.reduce_position_notional;
+        delete merged.reduce_order_size_multiplier;
       }
       list.push(merged);
       seen.add(symbol);
@@ -230,8 +235,15 @@ function normalizeStrategies(raw) {
       const base = value && typeof value === "object" ? value : {};
       const mode = String(base.grid_mode || "").toLowerCase() === "as" ? "as" : "dynamic";
       const merged = { ...strategyDefaults(mode), ...base, symbol, grid_mode: mode };
-      if (mode === "as" && numOrZero(merged.as_min_step) <= 0) {
-        merged.as_min_step = numOrZero(base.as_min_step ?? base.grid_step ?? 0);
+      if (mode === "as") {
+        delete merged.as_min_step;
+        delete merged.as_max_step_multiplier;
+        delete merged.grid_step;
+        delete merged.levels_up;
+        delete merged.levels_down;
+        delete merged.max_position_notional;
+        delete merged.reduce_position_notional;
+        delete merged.reduce_order_size_multiplier;
       }
       list.push(merged);
       seen.add(symbol);
@@ -283,16 +295,12 @@ function asStrategyRowTemplate(strategy) {
   const symbol = escapeHtml(strategy.symbol || "");
   const enabled = strategy.enabled ? "checked" : "";
   const market = escapeHtml(valueText(strategy.market_id));
-  const minStep = escapeHtml(valueText(strategy.as_min_step));
   const asGamma = escapeHtml(valueText(strategy.as_gamma));
   const asK = escapeHtml(valueText(strategy.as_k));
   const asTau = escapeHtml(valueText(strategy.as_tau_seconds));
   const asVol = escapeHtml(valueText(strategy.as_vol_points));
   const asStepMult = escapeHtml(valueText(strategy.as_step_multiplier));
-  const asMaxStepMult = escapeHtml(valueText(strategy.as_max_step_multiplier));
   const asMaxDrawdown = escapeHtml(valueText(strategy.as_max_drawdown));
-  const up = escapeHtml(valueText(strategy.levels_up));
-  const down = escapeHtml(valueText(strategy.levels_down));
   const size = escapeHtml(valueText(strategy.order_size_value));
   const mode = strategy.order_size_mode === "base" ? "base" : "notional";
   return `<tr>
@@ -300,16 +308,12 @@ function asStrategyRowTemplate(strategy) {
     <td data-label="启用"><input class="st-enabled" type="checkbox" ${enabled} /></td>
     <td data-label="market_id"><input class="st-market" placeholder="例如 0 或 ETH-USD-PERP" value="${market}" /></td>
     <td data-label="交易所限制"><div class="st-limit hint">等待 market_id 与市场列表</div></td>
-    <td data-label="AS 最小价差"><input class="st-as-min-step" placeholder="例如 1" value="${minStep}" /></td>
     <td data-label="ASγ"><input class="st-as-gamma" placeholder="默认 0.1" value="${asGamma}" /></td>
     <td data-label="AS-k"><input class="st-as-k" placeholder="默认 1.5" value="${asK}" /></td>
     <td data-label="AS-τ(s)"><input class="st-as-tau" placeholder="默认 30" value="${asTau}" /></td>
     <td data-label="AS-σ采样"><input class="st-as-vol" placeholder="默认 60" value="${asVol}" /></td>
     <td data-label="AS 价差乘数"><input class="st-as-step-mult" placeholder="默认 1" value="${asStepMult}" /></td>
-    <td data-label="AS 价差倍数"><input class="st-as-max-step-mult" placeholder="默认 10" value="${asMaxStepMult}" /></td>
     <td data-label="AS 最大回撤"><input class="st-as-max-dd" placeholder="例如 50" value="${asMaxDrawdown}" /></td>
-    <td data-label="上层"><input class="st-up" placeholder="1" value="${up}" /></td>
-    <td data-label="下层"><input class="st-down" placeholder="1" value="${down}" /></td>
     <td data-label="每单模式">
       <select class="st-mode">
         <option value="notional" ${mode === "notional" ? "selected" : ""}>固定名义金额</option>
@@ -339,9 +343,6 @@ function renderStrategyTable(tbody, list, mode) {
   if (!tbody) return;
   const rows = list && list.length ? list.map((item) => (mode === "as" ? asStrategyRowTemplate(item) : dynamicStrategyRowTemplate(item))).join("") : "";
   tbody.innerHTML = rows;
-  if (!rows) {
-    addStrategyRow({ symbol: "" }, mode);
-  }
 }
 
 function renderStrategies(list) {
@@ -406,29 +407,25 @@ function collectStrategiesFromTable() {
       symbol,
       enabled: Boolean(row.querySelector(".st-enabled")?.checked),
       market_id: marketIdValue(row.querySelector(".st-market")),
-      levels_up: Math.floor(numOrZero(row.querySelector(".st-up")?.value)),
-      levels_down: Math.floor(numOrZero(row.querySelector(".st-down")?.value)),
       order_size_mode: row.querySelector(".st-mode")?.value || "notional",
       order_size_value: numOrZero(row.querySelector(".st-size")?.value),
-      max_position_notional: numOrZero(row.querySelector(".st-maxpos")?.value),
-      reduce_position_notional: numOrZero(row.querySelector(".st-exitpos")?.value),
-      reduce_order_size_multiplier: numOrZero(row.querySelector(".st-reduce")?.value),
     };
 
     if (mode === "as") {
       strategies[symbol] = {
-        ...base,
+        symbol,
+        enabled: base.enabled,
+        market_id: base.market_id,
         grid_mode: "as",
-        max_position_notional: 0,
-        reduce_position_notional: 0,
-        reduce_order_size_multiplier: 1,
-        as_min_step: numOrZero(row.querySelector(".st-as-min-step")?.value),
+        order_size_mode: base.order_size_mode,
+        order_size_value: base.order_size_value,
+        post_only: Boolean(base.post_only),
+        max_open_orders: Math.floor(numOrZero(base.max_open_orders)),
         as_gamma: numOrZero(row.querySelector(".st-as-gamma")?.value),
         as_k: numOrZero(row.querySelector(".st-as-k")?.value),
         as_tau_seconds: numOrZero(row.querySelector(".st-as-tau")?.value),
         as_vol_points: Math.floor(numOrZero(row.querySelector(".st-as-vol")?.value)),
         as_step_multiplier: numOrZero(row.querySelector(".st-as-step-mult")?.value),
-        as_max_step_multiplier: numOrZero(row.querySelector(".st-as-max-step-mult")?.value),
         as_max_drawdown: numOrZero(row.querySelector(".st-as-max-dd")?.value),
       };
       return;
@@ -437,6 +434,11 @@ function collectStrategiesFromTable() {
     strategies[symbol] = {
       ...base,
       grid_mode: "dynamic",
+      levels_up: Math.floor(numOrZero(row.querySelector(".st-up")?.value)),
+      levels_down: Math.floor(numOrZero(row.querySelector(".st-down")?.value)),
+      max_position_notional: numOrZero(row.querySelector(".st-maxpos")?.value),
+      reduce_position_notional: numOrZero(row.querySelector(".st-exitpos")?.value),
+      reduce_order_size_multiplier: numOrZero(row.querySelector(".st-reduce")?.value),
       grid_step: numOrZero(row.querySelector(".st-step")?.value),
     };
   }
@@ -573,6 +575,13 @@ function setAuthCardInfo(text) {
   if (els.authStatus) {
     els.authStatus.textContent = text;
   }
+}
+
+function setSecretStatus(el, saved) {
+  if (!el) return;
+  el.textContent = saved ? "已保存（加密）" : "未保存";
+  el.classList.toggle("saved", saved);
+  el.classList.toggle("empty", !saved);
 }
 
 function showApp(show) {
@@ -733,33 +742,21 @@ function fillConfig(cfg) {
   if (els.exRemember) {
     els.exRemember.value = String(Boolean(ex.remember_secrets));
   }
-  if (els.exApiKeyHint) {
-    els.exApiKeyHint.textContent = ex.api_private_key_set ? "已保存（加密）" : "未保存";
-  }
-  if (els.exEthKeyHint) {
-    els.exEthKeyHint.textContent = ex.eth_private_key_set ? "已保存（加密）" : "未保存";
-  }
+  setSecretStatus(els.exApiKeyHint, Boolean(ex.api_private_key_set));
+  setSecretStatus(els.exEthKeyHint, Boolean(ex.eth_private_key_set));
   if (els.grvtAccountId) {
     els.grvtAccountId.value = ex.grvt_account_id || "";
   }
-  if (els.grvtApiKeyHint) {
-    els.grvtApiKeyHint.textContent = ex.grvt_api_key_set ? "已保存（加密）" : "未保存";
-  }
-  if (els.grvtPrivateKeyHint) {
-    els.grvtPrivateKeyHint.textContent = ex.grvt_private_key_set ? "已保存（加密）" : "未保存";
-  }
+  setSecretStatus(els.grvtApiKeyHint, Boolean(ex.grvt_api_key_set));
+  setSecretStatus(els.grvtPrivateKeyHint, Boolean(ex.grvt_private_key_set));
   if (els.pxL1) {
     els.pxL1.value = ex.paradex_l1_address || "";
   }
   if (els.pxL2) {
     els.pxL2.value = ex.paradex_l2_address || "";
   }
-  if (els.pxL1KeyHint) {
-    els.pxL1KeyHint.textContent = ex.paradex_l1_private_key_set ? "已保存（加密）" : "未保存";
-  }
-  if (els.pxL2KeyHint) {
-    els.pxL2KeyHint.textContent = ex.paradex_l2_private_key_set ? "已保存（加密）" : "未保存";
-  }
+  setSecretStatus(els.pxL1KeyHint, Boolean(ex.paradex_l1_private_key_set));
+  setSecretStatus(els.pxL2KeyHint, Boolean(ex.paradex_l2_private_key_set));
 
   const rt = cfg.runtime || {};
   els.runtimeDryRun.value = String(Boolean(rt.dry_run));
@@ -1201,9 +1198,6 @@ function wire() {
         const row = target.closest("tr");
         if (row) {
           row.remove();
-          if (!getStrategyRowsByMode(mode).length) {
-            addStrategyRow({ symbol: "" }, mode);
-          }
         }
       }
     });

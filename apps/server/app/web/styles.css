@@ -304,6 +304,46 @@ button.danger {
   line-height: 1.5;
 }
 
+.secret-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--input-bg);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.secret-status::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted-strong);
+}
+
+.secret-status.saved {
+  color: var(--ok);
+  border-color: var(--ok);
+  background: var(--ok-soft);
+}
+
+.secret-status.saved::before {
+  background: var(--ok);
+}
+
+.secret-status.empty {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.secret-status.empty::before {
+  background: var(--danger);
+}
+
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
