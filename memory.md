@@ -5,19 +5,14 @@
 
 ## 1. 📍 Current Status (当前状态)
 
-**当前阶段**: [ ✅ 已交付 ]
+**当前阶段**: [ 🐛 调试中 ]
 **当前任务**:
-- [x] AS 网格参数精简（移除 as_min_step / as_max_step_multiplier / 上下层设置）
-- [x] AS 价差计算按论文公式，步长 = max(半价差 * as_step_multiplier, 最小价格刻度)
-- [x] AS 网格仅挂两单（1 bid + 1 ask），风控为最大回撤保护（as_max_drawdown）
-- [x] 私钥保存状态可视化（显著状态标记）
-- [x] 允许删除动态网格/AS 网格最后一行
-- [x] GRVT 缺失 pysdk 时返回友好错误，避免 Internal Server Error
-- [x] Lighter 统计按 account_index 匹配修复（上一轮完成）
-- [x] 切换到新服务器 154.201.95.70，Web 与服务状态正常
+- [ ] 验证 Lighter 运行统计（成交量/笔数）是否正常（已加入 auth token + retry）
+- [ ] 验证 GRVT 真实连接与下单（已安装 grvt-pysdk，使用 --no-deps）
 
 **下一步计划**:
-- [ ] 如需继续：检查 WebUI 操作反馈与策略启动/统计刷新
+- [ ] 在 WebUI 启动 Lighter 策略后检查 /api/runtime/status
+- [ ] 在 GRVT 环境执行 test_connection / 启动策略验证
 
 ## 2. 🛠 Tech Stack & Config (技术栈与配置)
 
@@ -33,7 +28,8 @@
 - Python Version: >= 3.11
 - 默认端口: 9999（监听 0.0.0.0）
 - 环境变量: GRID_HOST, GRID_PORT, GRID_DATA_DIR
-- 运行参数: runtime.simulate_fill（模拟模式开关）
+- 运行参数: runtime.simulate_fill（模拟成交开关）
+- 依赖拆分: apps/server/requirements.txt（Lighter/Paradex）+ apps/server/requirements-grvt.txt（GRVT，--no-deps 安装）
 
 ## 3. 🏗 Architecture & Patterns (架构与模式)
 
@@ -44,8 +40,8 @@
 - scripts: 部署与运维脚本
 
 **部署结构**:
-- 远程部署服务器: 45.207.211.121:22（root）
-- 服务器仓库路径: /root/grid
+- 远程部署服务器: 154.201.95.70:22（root）
+- 服务端仓库路径: /root/grid
 - Python 虚拟环境: /root/grid/.venv
 - systemd 服务: /etc/systemd/system/grid.service
 - 启动命令: /root/grid/.venv/bin/python -m uvicorn app.main:app --app-dir apps/server --host 0.0.0.0 --port 9999
@@ -56,21 +52,18 @@
 - 动态网格与 AS 网格在 UI 分表配置，后端通过 grid_mode 区分
 - AS 价差按 Avellaneda-Stoikov 公式计算，步长最小为价格刻度
 - AS 网格仅挂两单（1 bid + 1 ask）
-- AS 风控仅最大回撤（as_max_drawdown），不使用减仓模式
+- AS 风控仅最大回撤保护（as_max_drawdown），不使用减仓模式
 
 ## 4. 📝 Key Decisions Log (关键决策记录)
 
-- **[2026-02-02]**: 移除 AS 的 as_min_step / as_max_step_multiplier / 上下层参数，采用论文公式 + 价格刻度约束。
-- **[2026-02-02]**: 增加私钥保存状态可视化提示，允许删除最后一行策略。
-- **[2026-02-02]**: GRVT 缺失 pysdk 时返回友好错误，避免启动策略 500。
-- **[2026-02-02]**: 修复 Lighter 统计按 account_index 匹配（上一轮完成）。
-- **[2026-02-01]**: 动态网格与 AS 网格彻底分开（WebUI 独立表格）。
-- **[2026-02-01]**: AS 网格仅挂两单并启用最大回撤保护。
+- **[2026-02-04]**: Lighter 成交统计新增 auth token 与重试机制，修复统计为 0 的问题。
+- **[2026-02-04]**: 拆分 GRVT 依赖到 requirements-grvt.txt，并以 --no-deps 安装，规避 websockets 版本冲突。
+- **[2026-02-03]**: 默认远程部署服务器切换为 154.201.95.70。
 
 ## 5. ⚠️ Known Issues & Constraints (已知问题与约束)
 
 - 旧服务器 45.207.211.121 Web/SSH 不可用（HTTP 无响应、SSH 握手超时）。
-- 新服务器 154.201.95.70 已可访问（HTTP 200，grid.service 运行）。
+- GRVT SDK 依赖通过 --no-deps 安装，若运行时出现 websockets 兼容性问题需进一步验证。
 
 ## 6. 🎨 User Preferences (用户偏好)
 
@@ -79,8 +72,8 @@
 - 遵循 KISS / SOLID。
 - 发现缺陷优先修复再扩展。
 - 禁止 MVP 或占位实现。
-- 有改动需自动提交并推送远端。
+- 有改动需提交并推送远端。
 
 ---
 
-**Last Updated**: 2026-02-02 23:33
+**Last Updated**: 2026-02-04 07:01
