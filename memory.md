@@ -5,7 +5,7 @@
 
 ## 1. 📍 Current Status (当前状态)
 
-**当前阶段**: [ 🐛 调试中 ]
+**当前阶段**: [ ✅ 已交付 ]
 **当前任务**:
 - [x] AS 网格参数精简（移除 as_min_step / as_max_step_multiplier / 上下层设置）
 - [x] AS 价差计算按论文公式，步长 = max(半价差 * as_step_multiplier, 最小价格刻度)
@@ -14,10 +14,10 @@
 - [x] 允许删除动态网格/AS 网格最后一行
 - [x] GRVT 缺失 pysdk 时返回友好错误，避免 Internal Server Error
 - [x] Lighter 统计按 account_index 匹配修复（上一轮完成）
-- [ ] 排查网页打不开（HTTP 超时）与 SSH 握手超时问题
+- [x] 切换到新服务器 154.201.95.70，Web 与服务状态正常
 
 **下一步计划**:
-- [ ] 通过控制台或其他通道重启服务器/sshd，并检查 grid.service 日志
+- [ ] 如需继续：检查 WebUI 操作反馈与策略启动/统计刷新
 
 ## 2. 🛠 Tech Stack & Config (技术栈与配置)
 
@@ -69,8 +69,8 @@
 
 ## 5. ⚠️ Known Issues & Constraints (已知问题与约束)
 
-- 45.207.211.121:9999 TCP 可连接但 HTTP 无响应，网页打不开（多次重试仍超时）。
-- 45.207.211.121:22 SSH 握手超时（读取 banner 失败），无法远程登录排查（多次重试仍失败）。
+- 旧服务器 45.207.211.121 Web/SSH 不可用（HTTP 无响应、SSH 握手超时）。
+- 新服务器 154.201.95.70 已可访问（HTTP 200，grid.service 运行）。
 
 ## 6. 🎨 User Preferences (用户偏好)
 
@@ -83,4 +83,4 @@
 
 ---
 
-**Last Updated**: 2026-02-02 23:24
+**Last Updated**: 2026-02-02 23:33
