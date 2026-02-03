@@ -346,17 +346,20 @@ async def _lighter_trades_since(
 ) -> tuple[Decimal, int]:
     total = Decimal(0)
     count = 0
+    auth_token = await trader.auth_token()
     cursor = None
     pages = 0
     reached_old = False
     while pages < max_pages and not reached_old:
-        resp = await trader._order_api.trades(
+        resp = await trader._call_with_retry(
+            trader._order_api.trades,
             sort_by="timestamp",
             limit=100,
             market_id=int(market_id),
             account_index=int(trader.account_index),
             sort_dir="desc",
             cursor=cursor,
+            auth=auth_token,
         )
         trades = getattr(resp, "trades", None)
         if trades is None and isinstance(resp, dict):
