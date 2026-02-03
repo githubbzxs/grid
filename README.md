@@ -27,7 +27,8 @@
 
 - Python 3.11+
 - 可访问 GitHub 与 PyPI
-- `apps/server/requirements.txt` 中包含官方 SDK（Lighter / Paradex / GRVT）
+- `apps/server/requirements.txt` 中包含官方 SDK（Lighter / Paradex）
+- `apps/server/requirements-grvt.txt` 为 GRVT SDK（需使用 `--no-deps` 安装，避免与其他 SDK 的 websockets 版本冲突）
 
 ## 4. 启动方式
 

@@ -3,4 +3,3 @@ uvicorn[standard]>=0.27
 cryptography>=42
 git+https://github.com/elliottech/lighter-python@b489f27896dd9df8c45c22b1b85adf5011861e3a
 git+https://github.com/tradeparadex/paradex-py@main
-grvt-pysdk==0.2.1

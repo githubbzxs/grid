@@ -15,6 +15,7 @@ if not exist ".venv" (
 
 ".venv\\Scripts\\python" -m pip install --upgrade pip >nul
 ".venv\\Scripts\\pip" install -r "apps\\server\\requirements.txt"
+".venv\\Scripts\\pip" install --no-deps -r "apps\\server\\requirements-grvt.txt"
 
 set "GRID_DATA_DIR=%cd%\\data"
 

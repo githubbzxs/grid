@@ -12,6 +12,7 @@ fi
 
 ./.venv/bin/python -m pip install --upgrade pip >/dev/null
 ./.venv/bin/pip install -r "apps/server/requirements.txt"
+./.venv/bin/pip install --no-deps -r "apps/server/requirements-grvt.txt"
 
 export GRID_DATA_DIR="$ROOT_DIR/data"
 
