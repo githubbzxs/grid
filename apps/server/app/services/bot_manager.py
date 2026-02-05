@@ -407,6 +407,7 @@ class BotManager:
         self._trade_pnl: Dict[str, TradePnlState] = {}
         self._delay_counts: Dict[str, int] = {}
         self._delay_price_marks: Dict[str, set[str]] = {}
+        self._create_block_notice: Dict[str, tuple[int, str]] = {}
         self._markets_cache: Dict[tuple[str, str], tuple[float, list[Dict[str, Any]]]] = {}
         self._market_resolve_next: Dict[tuple[str, str], float] = {}
         self._markets_cache_ttl_s = 60.0
@@ -428,6 +429,7 @@ class BotManager:
                 self._trade_pnl_reset(symbol)
                 self._delay_counts.pop(symbol, None)
                 self._delay_price_marks.pop(symbol, None)
+                self._create_block_notice.pop(symbol, None)
                 self._history_recorded.discard(symbol)
                 self._start_ms[symbol] = _now_ms()
             elif symbol not in self._start_ms:
@@ -1334,6 +1336,8 @@ class BotManager:
                                 )
 
                 created_attempts = 0
+                create_block_reasons: set[str] = set()
+                create_block_tip = ""
                 if available_slots > 0 and (missing_asks + missing_bids) > 0:
                     plan_candidates: list[tuple[Decimal, str, Decimal]] = []
                     for price in missing_ask_prices:
@@ -1369,16 +1373,22 @@ class BotManager:
                         base_qty = _calc_base_qty(size_mode, size_value_effective, price_q)
                         base_qty_q = _quantize(base_qty, meta.size_decimals, ROUND_DOWN)
                         if base_qty_q <= 0:
+                            create_block_reasons.add("qty_non_positive")
                             continue
                         if base_qty_q < meta.min_base_amount:
+                            create_block_reasons.add(f"below_min_base[{base_qty_q}<{meta.min_base_amount}]")
                             continue
-                        if (base_qty_q * price_q) < meta.min_quote_amount:
+                        quote_notional = base_qty_q * price_q
+                        if quote_notional < meta.min_quote_amount:
+                            create_block_reasons.add(f"below_min_quote[{quote_notional}<{meta.min_quote_amount}]")
                             continue
 
                         oid = grid_client_order_id(prefix, side, level)
                         if oid in existing:
+                            create_block_reasons.add("client_id_collision")
                             continue
                         if oid > CLIENT_ORDER_MAX:
+                            create_block_reasons.add("client_id_overflow")
                             continue
                         price_int = _to_scaled_int(price_q, meta.price_decimals, ROUND_HALF_UP)
                         base_int = _to_scaled_int(base_qty_q, meta.size_decimals, ROUND_DOWN)
@@ -1416,6 +1426,26 @@ class BotManager:
                                 created_attempts += 1
                             except Exception as exc:
                                 self._logbus.publish(f"order.create.error symbol={symbol} id={oid} err={type(exc).__name__}:{exc}")
+                if created_attempts > 0:
+                    self._create_block_notice.pop(symbol, None)
+                elif create_block_reasons:
+                    create_block_tip = sorted(create_block_reasons)[0]
+                    reason_text = ",".join(sorted(create_block_reasons))
+                    prev = self._create_block_notice.get(symbol)
+                    should_log = True
+                    if prev:
+                        prev_ms, prev_reason = prev
+                        if prev_reason == reason_text and (now_ms - prev_ms) < 3000:
+                            should_log = False
+                    if should_log:
+                        self._logbus.publish(
+                            "order.create.blocked "
+                            f"symbol={symbol} market_id={market_id} "
+                            f"size_mode={size_mode} size_value={size_value} "
+                            f"min_base={meta.min_base_amount} min_quote={meta.min_quote_amount} "
+                            f"reasons={reason_text}"
+                        )
+                    self._create_block_notice[symbol] = (now_ms, reason_text)
 
                 if cancel_orders or created_attempts > 0:
                     self._logbus.publish(
@@ -1436,6 +1466,8 @@ class BotManager:
                     if stop_reason:
                         stop_tip = f"停止信号:{stop_reason}"
                     msg = f"{msg} | {stop_tip}"
+                if create_block_tip:
+                    msg = f"{msg} | blocked:{create_block_tip}"
                 await self._update_status(
                     symbol,
                     running=True,
