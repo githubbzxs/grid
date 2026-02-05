@@ -80,6 +80,118 @@ def _exchange_name(config: Dict[str, Any], override: Optional[str] = None) -> st
     return "lighter"
 
 
+def _strategy_exchange(config: Dict[str, Any], strat: Dict[str, Any]) -> str:
+    raw = str(strat.get("exchange") or "").strip()
+    return _exchange_name(config, raw if raw else None)
+
+
+def _normalize_symbol(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _normalize_market_id(exchange: str, value: Any) -> Optional[str | int]:
+    if value is None:
+        return None
+    if exchange in {"paradex", "grvt"}:
+        text = str(value).strip()
+        return text or None
+    try:
+        return int(str(value).strip())
+    except Exception:
+        return None
+
+
+def _pick_market_item(symbol: str, items: list[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    upper = _normalize_symbol(symbol)
+    if not upper:
+        return None
+    def _sym(item: Dict[str, Any]) -> str:
+        return str(item.get("symbol") or "").upper()
+    exact = [item for item in items if _sym(item) == upper]
+    candidates = exact if exact else [item for item in items if upper in _sym(item)]
+    if not candidates:
+        return None
+    def _score(item: Dict[str, Any]) -> int:
+        sym = _sym(item)
+        score = 0
+        if sym == upper:
+            score += 5
+        if "USDC" in sym:
+            score += 3
+        elif "USD" in sym:
+            score += 2
+        return score
+    return max(candidates, key=_score)
+
+
+async def _fetch_markets_for_exchange(exchange: str, env: str) -> list[Dict[str, Any]]:
+    if exchange == "paradex":
+        return await paradex_fetch_perp_markets(env)
+    if exchange == "grvt":
+        return await grvt_fetch_perp_markets(env)
+    return await lighter_fetch_perp_markets(env)
+
+
+async def _resolve_market_id(
+    request: Request,
+    exchange: str,
+    env: str,
+    symbol: str,
+    cache: Dict[tuple[str, str], list[Dict[str, Any]]],
+) -> Optional[str | int]:
+    key = (exchange, env)
+    if key not in cache:
+        try:
+            cache[key] = await _fetch_markets_for_exchange(exchange, env)
+        except Exception as exc:
+            request.app.state.logbus.publish(
+                f"market.resolve.error exchange={exchange} env={env} err={type(exc).__name__}:{exc}"
+            )
+            cache[key] = []
+    items = cache.get(key) or []
+    picked = _pick_market_item(symbol, items)
+    if not picked:
+        return None
+    return _normalize_market_id(exchange, picked.get("market_id"))
+
+
+async def _fill_strategy_market_ids(
+    request: Request,
+    config: Dict[str, Any],
+    symbols: Optional[set[str]] = None,
+) -> bool:
+    strategies = config.get("strategies") or {}
+    if not isinstance(strategies, dict):
+        return False
+    env = str((config.get("exchange", {}) or {}).get("env") or "mainnet")
+    cache: Dict[tuple[str, str], list[Dict[str, Any]]] = {}
+    updated = False
+    symbol_set = {s for s in (_normalize_symbol(x) for x in symbols) if s} if symbols else None
+    for key, strat in strategies.items():
+        if not isinstance(strat, dict):
+            continue
+        symbol = _normalize_symbol(key)
+        if not symbol:
+            continue
+        if symbol_set is not None and symbol not in symbol_set:
+            continue
+        exchange = _strategy_exchange(config, strat)
+        if not str(strat.get("exchange") or "").strip():
+            strat["exchange"] = exchange
+            updated = True
+        market_id = _normalize_market_id(exchange, strat.get("market_id"))
+        if market_id is None:
+            resolved = await _resolve_market_id(request, exchange, env, symbol, cache)
+            if resolved is not None:
+                strat["market_id"] = resolved
+                updated = True
+        else:
+            if market_id != strat.get("market_id"):
+                strat["market_id"] = market_id
+                updated = True
+    return updated
+
+
 def _safe_str(value: Any) -> Optional[str]:
     if value is None:
         return None
@@ -612,6 +724,8 @@ async def update_config(
     if patch:
         merged = _deep_merge(merged, patch)
 
+    await _fill_strategy_market_ids(request, merged)
+
     remember = bool(merged.get("exchange", {}).get("remember_secrets", True))
     runtime_secrets: Dict[str, str] = request.app.state.runtime_secrets
 
@@ -685,11 +799,13 @@ async def bots_status(request: Request, _: str = Depends(require_auth)) -> Dict[
 async def bots_start(body: BotSymbolsBody, request: Request, _: str = Depends(require_unlocked)) -> Dict[str, Any]:
     config: Dict[str, Any] = request.app.state.config.read()
     exchange_name = _exchange_name(config)
+    symbols = [s for s in (_normalize_symbol(x) for x in body.symbols) if s]
+    if await _fill_strategy_market_ids(request, config, symbols=set(symbols)):
+        request.app.state.config.write(config)
     trader = await _ensure_trader(request, exchange_name)
     runtime_stats: Dict[str, Any] = request.app.state.runtime_stats
     now_ms = _now_ms()
-    for symbol in body.symbols:
-        sym = symbol.upper()
+    for sym in symbols:
         strat = (config.get("strategies", {}) or {}).get(sym, {}) or {}
         strat_exchange = str(strat.get("exchange") or "").strip().lower()
         if strat_exchange and strat_exchange != exchange_name:
@@ -1156,8 +1272,13 @@ async def exchange_active_orders(
     simulate = bool(runtime.get("dry_run", True)) and bool(runtime.get("simulate_fill", False))
     name = _exchange_name(config, exchange)
     strat = (config.get("strategies", {}) or {}).get(symbol, {}) or {}
-    market_id = strat.get("market_id")
-    if market_id is None or (isinstance(market_id, str) and not market_id.strip()):
+    market_id = _normalize_market_id(name, strat.get("market_id"))
+    if market_id is None:
+        if await _fill_strategy_market_ids(request, config, symbols={symbol}):
+            request.app.state.config.write(config)
+            strat = (config.get("strategies", {}) or {}).get(symbol, {}) or {}
+            market_id = _normalize_market_id(name, strat.get("market_id"))
+    if market_id is None:
         raise HTTPException(status_code=400, detail="未配置 market_id")
 
     if simulate:

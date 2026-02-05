@@ -35,7 +35,7 @@
         <div class="card section page-section active" id="section-strategy">
           <h2>策略配置（无限网格）</h2>
           <div class="hint">
-            market_id 以交易所市场列表为准；Lighter 使用数字 market_id，Paradex/GRVT 使用 instrument 字符串。
+            币对将由后台自动匹配市场，不再需要手动维护 market_id。
           </div>
           <div class="hint">
             动态网格与 AS 网格已拆分，请在对应表格中配置。
@@ -51,7 +51,6 @@
                 <th>标的</th>
                 <th>交易所</th>
                 <th>启用</th>
-                <th>market_id</th>
                 <th>交易所限制</th>
                 <th>价差</th>
                 <th>上层</th>
@@ -78,7 +77,6 @@
                 <th>标的</th>
                 <th>交易所</th>
                 <th>启用</th>
-                <th>market_id</th>
                 <th>交易所限制</th>
                 <th>ASγ</th>
                 <th>AS-k</th>
@@ -191,7 +189,6 @@
             <thead>
               <tr>
                 <th>标的</th>
-                <th>market_id</th>
                 <th>状态</th>
                 <th>mid</th>
                 <th>center</th>
@@ -252,7 +249,6 @@
             <thead>
               <tr>
                 <th>标的</th>
-                <th>market_id</th>
                 <th>收益</th>
                 <th>交易量</th>
                 <th>交易笔数</th>
@@ -444,6 +440,7 @@
     <script src="/static/app.js"></script>
   </body>
 </html>
+
 
 
 

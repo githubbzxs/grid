@@ -1,4 +1,4 @@
-const els = {
+﻿const els = {
   btnLogout: document.getElementById("btn-logout"),
   btnLock: document.getElementById("btn-lock"),
   appArea: document.getElementById("app-area"),
@@ -29,9 +29,7 @@ const els = {
   grvtApiKeyHint: document.getElementById("grvt-api-key-hint"),
   grvtPrivateKeyHint: document.getElementById("grvt-private-key-hint"),
   btnSaveConfig: document.getElementById("btn-save-config"),
-  btnFetchMarkets: document.getElementById("btn-fetch-markets"),
   btnTestConn: document.getElementById("btn-test-conn"),
-  marketsOutput: document.getElementById("markets-output"),
   testOutput: document.getElementById("test-output"),
 
   strategyDynamicTable: document.getElementById("strategy-dynamic-table"),
@@ -92,7 +90,6 @@ const els = {
 
 let authState = { setup_required: true, authenticated: false, unlocked: false };
 let logSource = null;
-let lastMarkets = [];
 let currentStrategies = [];
 let lastBots = {};
 let runtimeTimer = null;
@@ -146,16 +143,16 @@ function updateExchangeLimitHint() {
   const exchange = currentExchange();
   if (exchange === "grvt") {
     els.exchangeLimitHint.textContent =
-      "GRVT 限制：market_id 为 instrument 字符串，价格/数量精度与最小下单量以市场列表为准，默认 GTT（GOOD_TILL_TIME），post_only 生效，client_order_id 需唯一。";
+      "GRVT 限制：价格/数量精度与最小下单量以市场规则为准，默认 GTT（GOOD_TILL_TIME），post_only 生效，client_order_id 需唯一。";
     return;
   }
   if (exchange === "paradex") {
     els.exchangeLimitHint.textContent =
-      "Paradex 限制：market_id 为市场字符串，价格/数量精度与最小下单量以市场列表为准，建议使用 L2 subkey。";
+      "Paradex 限制：价格/数量精度与最小下单量以市场规则为准，建议使用 L2 subkey。";
     return;
   }
   els.exchangeLimitHint.textContent =
-    "Lighter 限制：market_id 为数字，价格/数量精度与最小下单量以市场列表为准，需匹配 account_index 与 api_key_index。";
+    "Lighter 限制：价格/数量精度与最小下单量以市场规则为准，需匹配 account_index 与 api_key_index。";
 }
 
 function syncSimulateFillState() {
@@ -262,7 +259,6 @@ function dynamicStrategyRowTemplate(strategy) {
   const symbol = escapeHtml(strategy.symbol || "");
   const exchange = String(strategy.exchange || currentExchange()).toLowerCase();
   const enabled = strategy.enabled ? "checked" : "";
-  const market = escapeHtml(valueText(strategy.market_id));
   const step = escapeHtml(valueText(strategy.grid_step));
   const up = escapeHtml(valueText(strategy.levels_up));
   const down = escapeHtml(valueText(strategy.levels_down));
@@ -281,8 +277,7 @@ function dynamicStrategyRowTemplate(strategy) {
       </select>
     </td>
     <td data-label="启用"><input class="st-enabled" type="checkbox" ${enabled} /></td>
-    <td data-label="market_id"><input class="st-market" placeholder="例如 0 或 ETH-USD-PERP" value="${market}" /></td>
-    <td data-label="交易所限制"><div class="st-limit hint">等待 market_id 与市场列表</div></td>
+    <td data-label="交易所限制"><div class="st-limit hint">后台自动匹配市场</div></td>
     <td data-label="价差"><input class="st-step" placeholder="例如 5" value="${step}" /></td>
     <td data-label="上层"><input class="st-up" placeholder="10" value="${up}" /></td>
     <td data-label="下层"><input class="st-down" placeholder="10" value="${down}" /></td>
@@ -304,7 +299,6 @@ function asStrategyRowTemplate(strategy) {
   const symbol = escapeHtml(strategy.symbol || "");
   const exchange = String(strategy.exchange || currentExchange()).toLowerCase();
   const enabled = strategy.enabled ? "checked" : "";
-  const market = escapeHtml(valueText(strategy.market_id));
   const asGamma = escapeHtml(valueText(strategy.as_gamma));
   const asK = escapeHtml(valueText(strategy.as_k));
   const asTau = escapeHtml(valueText(strategy.as_tau_seconds));
@@ -323,8 +317,7 @@ function asStrategyRowTemplate(strategy) {
       </select>
     </td>
     <td data-label="启用"><input class="st-enabled" type="checkbox" ${enabled} /></td>
-    <td data-label="market_id"><input class="st-market" placeholder="例如 0 或 ETH-USD-PERP" value="${market}" /></td>
-    <td data-label="交易所限制"><div class="st-limit hint">等待 market_id 与市场列表</div></td>
+    <td data-label="交易所限制"><div class="st-limit hint">后台自动匹配市场</div></td>
     <td data-label="ASγ"><input class="st-as-gamma" placeholder="默认 0.1" value="${asGamma}" /></td>
     <td data-label="AS-k"><input class="st-as-k" placeholder="默认 1.5" value="${asK}" /></td>
     <td data-label="AS-τ(s)"><input class="st-as-tau" placeholder="默认 30" value="${asTau}" /></td>
@@ -348,12 +341,6 @@ function addStrategyRow(strategy, mode = "dynamic") {
   const data = strategy ? { ...strategyDefaults(mode), ...strategy } : strategyDefaults(mode);
   const template = mode === "as" ? asStrategyRowTemplate(data) : dynamicStrategyRowTemplate(data);
   tbody.insertAdjacentHTML("beforeend", template);
-  const rows = getStrategyRowsByMode(mode);
-  const row = rows[rows.length - 1];
-  if (row && lastMarkets.length) {
-    autoFillMarketIdForRow(row, lastMarkets);
-  }
-  refreshStrategyLimits();
 }
 
 function renderStrategyTable(tbody, list, mode) {
@@ -374,10 +361,6 @@ function renderStrategies(list) {
   });
   renderStrategyTable(els.strategyDynamicTbody, dynamicList, "dynamic");
   renderStrategyTable(els.strategyAsTbody, asList, "as");
-  if (lastMarkets.length) {
-    autoFillMarketIds(lastMarkets);
-  }
-  refreshStrategyLimits();
 }
 
 function getStrategyRowsByMode(mode) {
@@ -420,13 +403,22 @@ function collectStrategiesFromTable() {
     }
     seen.add(symbol);
     const existing = currentStrategies.find((item) => item.symbol === symbol) || {};
+    const prevExchange = String(existing.exchange || currentExchange()).toLowerCase();
+    const nextExchange = String(exchange || currentExchange()).toLowerCase();
+    let marketId = existing.market_id;
+    if (typeof marketId === "string" && !marketId.trim()) {
+      marketId = null;
+    }
+    if (prevExchange !== nextExchange) {
+      marketId = null;
+    }
     const base = {
       ...strategyDefaults(mode),
       ...existing,
       symbol,
       exchange: exchange || currentExchange(),
       enabled: Boolean(row.querySelector(".st-enabled")?.checked),
-      market_id: marketIdValue(row.querySelector(".st-market"), exchange),
+      market_id: marketId,
       order_size_mode: row.querySelector(".st-mode")?.value || "notional",
       order_size_value: numOrZero(row.querySelector(".st-size")?.value),
     };
@@ -507,78 +499,6 @@ function updateOrdersSymbolOptions() {
   } else {
     els.ordersSymbol.value = symbols[0];
   }
-}
-
-function autoFillMarketIdForRow(row, items, force = false) {
-  const symbolInput = row.querySelector(".st-symbol");
-  const marketInput = row.querySelector(".st-market");
-  if (!symbolInput || !marketInput) return;
-  const exchangeInput = row.querySelector(".st-exchange");
-  if (exchangeInput && String(exchangeInput.value || "").toLowerCase() !== currentExchange()) return;
-  const symbol = normalizeSymbol(symbolInput.value);
-  if (!symbol) return;
-  if (!force && String(marketInput.value || "").trim()) return;
-  const picked = pickMarketId(symbol, items);
-  if (picked != null) {
-    marketInput.value = String(picked);
-  }
-}
-
-function autoFillMarketIds(items, force = false) {
-  if (!items || !items.length) return;
-  getAllStrategyRows().forEach((row) => autoFillMarketIdForRow(row, items, force));
-}
-
-function marketLimitText(item) {
-  if (!item) return "等待 market_id 与市场列表";
-  const parts = [
-    `sizeDec=${item.supported_size_decimals}`,
-    `priceDec=${item.supported_price_decimals}`,
-  ];
-  if (item.min_base_amount != null) parts.push(`minBase=${item.min_base_amount}`);
-  if (item.min_quote_amount != null) parts.push(`minQuote=${item.min_quote_amount}`);
-  if (item.tick_size != null) parts.push(`tick=${item.tick_size}`);
-  return parts.join(" ");
-}
-
-function findMarketByRow(row, items) {
-  const exchangeInput = row.querySelector(".st-exchange");
-  if (exchangeInput && String(exchangeInput.value || "").toLowerCase() !== currentExchange()) {
-    return null;
-  }
-  const marketInput = row.querySelector(".st-market");
-  const symbolInput = row.querySelector(".st-symbol");
-  const rawMarket = marketInput ? String(marketInput.value || "").trim() : "";
-  const rawSymbol = symbolInput ? normalizeSymbol(symbolInput.value) : "";
-  if (!items || !items.length) return null;
-  if (rawMarket) {
-    const hit = items.find((x) => String(x.market_id) === rawMarket);
-    if (hit) return hit;
-  }
-  if (rawSymbol) {
-    const hit = items.find((x) => String(x.symbol || "").toUpperCase() === rawSymbol);
-    if (hit) return hit;
-  }
-  return null;
-}
-
-function refreshStrategyLimits() {
-  if (!els.strategyDynamicTbody && !els.strategyAsTbody) return;
-  const rows = getAllStrategyRows();
-  rows.forEach((row) => {
-    const holder = row.querySelector(".st-limit");
-    if (!holder) return;
-    const item = findMarketByRow(row, lastMarkets);
-    holder.textContent = marketLimitText(item);
-  });
-}
-
-function resetMarketIds() {
-  const rows = getAllStrategyRows();
-  rows.forEach((row) => {
-    const marketInput = row.querySelector(".st-market");
-    if (marketInput) marketInput.value = "";
-  });
 }
 
 async function apiFetch(path, { method = "GET", body = null } = {}) {
@@ -888,16 +808,6 @@ function numOrZero(v) {
   return n == null ? 0 : n;
 }
 
-function marketIdValue(input, exchangeOverride) {
-  if (!input) return null;
-  const raw = String(input.value || "").trim();
-  if (!raw) return null;
-  const exchange = String(exchangeOverride || currentExchange()).toLowerCase();
-  if (exchange === "paradex" || exchange === "grvt") return raw;
-  const n = Number(raw);
-  return Number.isFinite(n) ? Math.floor(n) : null;
-}
-
 async function saveStrategies() {
   const dryRun = els.runtimeDryRun.value === "true";
   const simulateFill = els.runtimeSimulateFill ? els.runtimeSimulateFill.value === "true" : false;
@@ -931,47 +841,10 @@ async function resolveAccountIndex() {
   els.exAccount.value = String(resp.account_index);
 }
 
-async function fetchMarkets() {
-  const env = els.exEnv.value;
-  const exchange = currentExchange();
-  const resp = await apiFetch(`/api/exchange/markets?env=${encodeURIComponent(env)}&exchange=${encodeURIComponent(exchange)}`);
-  const items = resp.items || [];
-  lastMarkets = items;
-  const lines = items.map((x) => formatMarketLine(x));
-  if (els.marketsOutput) {
-    els.marketsOutput.value = lines.join("\n");
-  }
-  autoFillMarketIds(items, true);
-  refreshStrategyLimits();
-  return items;
-}
-
 async function testConnection() {
   const exchange = currentExchange();
   const resp = await apiFetch(`/api/exchange/test_connection?exchange=${encodeURIComponent(exchange)}`, { method: "POST" });
   els.testOutput.value = JSON.stringify(resp.result || {}, null, 2);
-}
-
-function pickMarketId(symbol, items) {
-  const upper = symbol.toUpperCase();
-  const candidates = items.filter((x) => String(x.symbol || "").toUpperCase().includes(upper));
-  if (!candidates.length) return null;
-  const prefer = candidates.find((x) => /USDC|USD/.test(String(x.symbol || "").toUpperCase()));
-  return (prefer || candidates[0]).market_id;
-}
-
-function formatMarketLine(item) {
-  const parts = [
-    `${item.symbol} id=${item.market_id}`,
-    `sizeDec=${item.supported_size_decimals}`,
-    `priceDec=${item.supported_price_decimals}`,
-  ];
-  if (item.min_base_amount != null) parts.push(`minBase=${item.min_base_amount}`);
-  if (item.min_quote_amount != null) parts.push(`minQuote=${item.min_quote_amount}`);
-  if (item.tick_size != null) parts.push(`tick=${item.tick_size}`);
-  if (item.maker_fee != null) parts.push(`makerFee=${item.maker_fee}`);
-  if (item.taker_fee != null) parts.push(`takerFee=${item.taker_fee}`);
-  return parts.join(" ");
 }
 
 async function refreshAccount() {
@@ -1054,7 +927,6 @@ function renderRuntimeStatus(data) {
       const reduce = r.reduce_mode ? "是" : "否";
       return `<tr>
         <td class="mono">${escapeHtml(r.symbol || "")}</td>
-        <td class="mono muted">${escapeHtml(r.market_id || "")}</td>
         <td class="mono">${escapeHtml(fmtNumber(r.profit, 4))}</td>
         <td class="mono">${escapeHtml(fmtNumber(r.volume, 4))}</td>
         <td class="mono">${escapeHtml(String(r.trade_count || 0))}</td>
@@ -1122,7 +994,6 @@ function renderBots(bots) {
       const st = r.running ? "运行中" : "停止";
       return `<tr>
         <td class="mono">${escapeHtml(r.symbol)}</td>
-        <td class="mono muted">${escapeHtml(r.market_id || "")}</td>
         <td>${escapeHtml(st)}</td>
         <td class="mono muted">${escapeHtml(r.mid || "")}</td>
         <td class="mono muted">${escapeHtml(r.center || "")}</td>
@@ -1179,11 +1050,8 @@ function wire() {
   initNavigation();
   if (els.exName) {
     els.exName.addEventListener("change", async () => {
-      lastMarkets = [];
       applyExchangeUI();
       scheduleResolveAccountIndex();
-      resetMarketIds();
-      refreshStrategyLimits();
     });
   }
   if (els.exL1) {
@@ -1225,24 +1093,13 @@ function wire() {
     tbody.addEventListener("change", async (event) => {
       const target = event.target;
       if (!(target instanceof HTMLElement)) return;
-      if (target.classList.contains("st-exchange")) {
-        refreshStrategyLimits();
-        return;
-      }
       if (target.classList.contains("st-symbol")) {
         const row = target.closest("tr");
         if (!row) return;
         const symbol = normalizeSymbol(target.value);
         target.value = symbol;
         if (!symbol) return;
-        if (lastMarkets.length) {
-          autoFillMarketIdForRow(row, lastMarkets);
-        }
-        refreshStrategyLimits();
         return;
-      }
-      if (target.classList.contains("st-market")) {
-        refreshStrategyLimits();
       }
     });
   }
@@ -1278,15 +1135,6 @@ function wire() {
       alert(e.message);
     }
   });
-  if (els.btnFetchMarkets) {
-    els.btnFetchMarkets.addEventListener("click", async () => {
-      try {
-        await fetchMarkets();
-      } catch (e) {
-        alert(e.message);
-      }
-    });
-  }
   els.btnTestConn.addEventListener("click", async () => {
     try {
       await testConnection();
@@ -1390,3 +1238,8 @@ async function loop() {
 
 wire();
 loop();
+
+
+
+
+
