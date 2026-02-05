@@ -174,6 +174,7 @@ function normalizeSymbol(value) {
 function strategyDefaults(mode = "dynamic") {
   const base = {
     symbol: "",
+    exchange: currentExchange(),
     enabled: true,
     market_id: null,
     order_size_mode: "notional",
@@ -259,6 +260,7 @@ function valueText(value) {
 
 function dynamicStrategyRowTemplate(strategy) {
   const symbol = escapeHtml(strategy.symbol || "");
+  const exchange = String(strategy.exchange || currentExchange()).toLowerCase();
   const enabled = strategy.enabled ? "checked" : "";
   const market = escapeHtml(valueText(strategy.market_id));
   const step = escapeHtml(valueText(strategy.grid_step));
@@ -271,6 +273,13 @@ function dynamicStrategyRowTemplate(strategy) {
   const mode = strategy.order_size_mode === "base" ? "base" : "notional";
   return `<tr>
     <td data-label="标的"><input class="st-symbol mono" placeholder="例如 BTC" value="${symbol}" /></td>
+    <td data-label="交易所">
+      <select class="st-exchange">
+        <option value="lighter" ${exchange === "lighter" ? "selected" : ""}>Lighter</option>
+        <option value="grvt" ${exchange === "grvt" ? "selected" : ""}>GRVT</option>
+        <option value="paradex" ${exchange === "paradex" ? "selected" : ""}>Paradex</option>
+      </select>
+    </td>
     <td data-label="启用"><input class="st-enabled" type="checkbox" ${enabled} /></td>
     <td data-label="market_id"><input class="st-market" placeholder="例如 0 或 ETH-USD-PERP" value="${market}" /></td>
     <td data-label="交易所限制"><div class="st-limit hint">等待 market_id 与市场列表</div></td>
@@ -293,6 +302,7 @@ function dynamicStrategyRowTemplate(strategy) {
 
 function asStrategyRowTemplate(strategy) {
   const symbol = escapeHtml(strategy.symbol || "");
+  const exchange = String(strategy.exchange || currentExchange()).toLowerCase();
   const enabled = strategy.enabled ? "checked" : "";
   const market = escapeHtml(valueText(strategy.market_id));
   const asGamma = escapeHtml(valueText(strategy.as_gamma));
@@ -305,6 +315,13 @@ function asStrategyRowTemplate(strategy) {
   const mode = strategy.order_size_mode === "base" ? "base" : "notional";
   return `<tr>
     <td data-label="标的"><input class="st-symbol mono" placeholder="例如 BTC" value="${symbol}" /></td>
+    <td data-label="交易所">
+      <select class="st-exchange">
+        <option value="lighter" ${exchange === "lighter" ? "selected" : ""}>Lighter</option>
+        <option value="grvt" ${exchange === "grvt" ? "selected" : ""}>GRVT</option>
+        <option value="paradex" ${exchange === "paradex" ? "selected" : ""}>Paradex</option>
+      </select>
+    </td>
     <td data-label="启用"><input class="st-enabled" type="checkbox" ${enabled} /></td>
     <td data-label="market_id"><input class="st-market" placeholder="例如 0 或 ETH-USD-PERP" value="${market}" /></td>
     <td data-label="交易所限制"><div class="st-limit hint">等待 market_id 与市场列表</div></td>
@@ -376,7 +393,7 @@ function getAllStrategyRows() {
 function rowHasValues(row) {
   const inputs = Array.from(row.querySelectorAll("input, select"));
   return inputs.some((input) => {
-    if (input.classList.contains("st-symbol")) return false;
+    if (input.classList.contains("st-symbol") || input.classList.contains("st-exchange")) return false;
     if (input.type === "checkbox") return input.checked;
     return String(input.value || "").trim() !== "";
   });
@@ -390,6 +407,8 @@ function collectStrategiesFromTable() {
   function applyRow(row, mode) {
     const symbolInput = row.querySelector(".st-symbol");
     const symbol = normalizeSymbol(symbolInput ? symbolInput.value : "");
+    const exchangeInput = row.querySelector(".st-exchange");
+    const exchange = exchangeInput ? exchangeInput.value : currentExchange();
     if (!symbol) {
       if (rowHasValues(row)) {
         hasEmptySymbol = true;
@@ -405,8 +424,9 @@ function collectStrategiesFromTable() {
       ...strategyDefaults(mode),
       ...existing,
       symbol,
+      exchange: exchange || currentExchange(),
       enabled: Boolean(row.querySelector(".st-enabled")?.checked),
-      market_id: marketIdValue(row.querySelector(".st-market")),
+      market_id: marketIdValue(row.querySelector(".st-market"), exchange),
       order_size_mode: row.querySelector(".st-mode")?.value || "notional",
       order_size_value: numOrZero(row.querySelector(".st-size")?.value),
     };
@@ -414,6 +434,7 @@ function collectStrategiesFromTable() {
     if (mode === "as") {
       strategies[symbol] = {
         symbol,
+        exchange: base.exchange,
         enabled: base.enabled,
         market_id: base.market_id,
         grid_mode: "as",
@@ -453,7 +474,11 @@ function collectStrategiesFromTable() {
 }
 
 function getCurrentStrategySymbols() {
-  return currentStrategies.map((item) => item.symbol).filter(Boolean);
+  const exchange = currentExchange();
+  return currentStrategies
+    .filter((item) => String(item.exchange || exchange).toLowerCase() === exchange)
+    .map((item) => item.symbol)
+    .filter(Boolean);
 }
 
 function mergeSymbols(...lists) {
@@ -488,6 +513,8 @@ function autoFillMarketIdForRow(row, items, force = false) {
   const symbolInput = row.querySelector(".st-symbol");
   const marketInput = row.querySelector(".st-market");
   if (!symbolInput || !marketInput) return;
+  const exchangeInput = row.querySelector(".st-exchange");
+  if (exchangeInput && String(exchangeInput.value || "").toLowerCase() !== currentExchange()) return;
   const symbol = normalizeSymbol(symbolInput.value);
   if (!symbol) return;
   if (!force && String(marketInput.value || "").trim()) return;
@@ -515,6 +542,10 @@ function marketLimitText(item) {
 }
 
 function findMarketByRow(row, items) {
+  const exchangeInput = row.querySelector(".st-exchange");
+  if (exchangeInput && String(exchangeInput.value || "").toLowerCase() !== currentExchange()) {
+    return null;
+  }
   const marketInput = row.querySelector(".st-market");
   const symbolInput = row.querySelector(".st-symbol");
   const rawMarket = marketInput ? String(marketInput.value || "").trim() : "";
@@ -857,11 +888,12 @@ function numOrZero(v) {
   return n == null ? 0 : n;
 }
 
-function marketIdValue(input) {
+function marketIdValue(input, exchangeOverride) {
   if (!input) return null;
   const raw = String(input.value || "").trim();
   if (!raw) return null;
-  if (currentExchange() === "paradex" || currentExchange() === "grvt") return raw;
+  const exchange = String(exchangeOverride || currentExchange()).toLowerCase();
+  if (exchange === "paradex" || exchange === "grvt") return raw;
   const n = Number(raw);
   return Number.isFinite(n) ? Math.floor(n) : null;
 }
@@ -906,7 +938,9 @@ async function fetchMarkets() {
   const items = resp.items || [];
   lastMarkets = items;
   const lines = items.map((x) => formatMarketLine(x));
-  els.marketsOutput.value = lines.join("\n");
+  if (els.marketsOutput) {
+    els.marketsOutput.value = lines.join("\n");
+  }
   autoFillMarketIds(items, true);
   refreshStrategyLimits();
   return items;
@@ -1150,13 +1184,6 @@ function wire() {
       scheduleResolveAccountIndex();
       resetMarketIds();
       refreshStrategyLimits();
-      if (authState.authenticated) {
-        try {
-          await fetchMarkets();
-        } catch (e) {
-          console.warn(e);
-        }
-      }
     });
   }
   if (els.exL1) {
@@ -1198,19 +1225,16 @@ function wire() {
     tbody.addEventListener("change", async (event) => {
       const target = event.target;
       if (!(target instanceof HTMLElement)) return;
+      if (target.classList.contains("st-exchange")) {
+        refreshStrategyLimits();
+        return;
+      }
       if (target.classList.contains("st-symbol")) {
         const row = target.closest("tr");
         if (!row) return;
         const symbol = normalizeSymbol(target.value);
         target.value = symbol;
         if (!symbol) return;
-        if (!lastMarkets.length) {
-          try {
-            await fetchMarkets();
-          } catch {
-            return;
-          }
-        }
         if (lastMarkets.length) {
           autoFillMarketIdForRow(row, lastMarkets);
         }
@@ -1254,13 +1278,15 @@ function wire() {
       alert(e.message);
     }
   });
-  els.btnFetchMarkets.addEventListener("click", async () => {
-    try {
-      await fetchMarkets();
-    } catch (e) {
-      alert(e.message);
-    }
-  });
+  if (els.btnFetchMarkets) {
+    els.btnFetchMarkets.addEventListener("click", async () => {
+      try {
+        await fetchMarkets();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+  }
   els.btnTestConn.addEventListener("click", async () => {
     try {
       await testConnection();

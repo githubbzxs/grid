@@ -690,6 +690,13 @@ async def bots_start(body: BotSymbolsBody, request: Request, _: str = Depends(re
     now_ms = _now_ms()
     for symbol in body.symbols:
         sym = symbol.upper()
+        strat = (config.get("strategies", {}) or {}).get(sym, {}) or {}
+        strat_exchange = str(strat.get("exchange") or "").strip().lower()
+        if strat_exchange and strat_exchange != exchange_name:
+            request.app.state.logbus.publish(
+                f"bot.start.skip symbol={sym} exchange={exchange_name} reason=exchange_mismatch strat_exchange={strat_exchange}"
+            )
+            continue
         runtime_stats[sym] = {"exchange": exchange_name, "start_ms": now_ms, "base_pnl": None}
         await request.app.state.bot_manager.start(sym, trader)
     return {"ok": True, "bots": request.app.state.bot_manager.snapshot()}
