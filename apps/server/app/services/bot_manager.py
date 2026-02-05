@@ -296,6 +296,9 @@ def _order_side(order: Any) -> Optional[str]:
     is_ask = _order_field(order, "is_ask")
     if isinstance(is_ask, bool):
         return "ask" if is_ask else "bid"
+    is_buying_asset = _order_field(order, "is_buying_asset")
+    if isinstance(is_buying_asset, bool):
+        return "bid" if is_buying_asset else "ask"
     side = _order_field(order, "side") or _order_field(order, "order_side")
     if isinstance(side, str):
         upper = side.upper()
@@ -303,6 +306,21 @@ def _order_side(order: Any) -> Optional[str]:
             return "ask"
         if upper in ("BUY", "BID"):
             return "bid"
+    if isinstance(order, dict):
+        legs = order.get("legs")
+        if isinstance(legs, list) and legs:
+            leg0 = legs[0]
+            if isinstance(leg0, dict):
+                leg_buying = leg0.get("is_buying_asset")
+                if isinstance(leg_buying, bool):
+                    return "bid" if leg_buying else "ask"
+                leg_side = leg0.get("side")
+                if isinstance(leg_side, str):
+                    upper = leg_side.upper()
+                    if upper in ("SELL", "ASK"):
+                        return "ask"
+                    if upper in ("BUY", "BID"):
+                        return "bid"
     return None
 
 

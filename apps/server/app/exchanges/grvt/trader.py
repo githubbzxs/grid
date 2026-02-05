@@ -148,14 +148,28 @@ class GrvtTrader:
             if not isinstance(order, dict):
                 results.append(order)
                 continue
+            raw = order.get("info") if isinstance(order.get("info"), dict) else {}
             meta = order.get("metadata") if isinstance(order.get("metadata"), dict) else {}
+            if not meta and isinstance(raw.get("metadata"), dict):
+                meta = raw.get("metadata") or {}
             if meta and meta.get("client_order_id") is not None:
                 order["client_order_id"] = meta.get("client_order_id")
+            if order.get("id") is None and raw.get("id") is not None:
+                order["id"] = raw.get("id")
+            if order.get("client_order_id") is None and raw.get("client_order_id") is not None:
+                order["client_order_id"] = raw.get("client_order_id")
+            if order.get("client_order_id") is None and raw.get("clientOrderId") is not None:
+                order["client_order_id"] = raw.get("clientOrderId")
             legs = order.get("legs") if isinstance(order.get("legs"), list) else []
+            if not legs and isinstance(raw.get("legs"), list):
+                legs = raw.get("legs") or []
             if legs:
                 leg = legs[0] if isinstance(legs[0], dict) else {}
                 if leg and leg.get("limit_price") is not None:
                     order["price"] = leg.get("limit_price")
+                if leg and isinstance(leg.get("is_buying_asset"), bool):
+                    order["is_buying_asset"] = leg.get("is_buying_asset")
+                    order["is_ask"] = not bool(leg.get("is_buying_asset"))
             results.append(order)
         return results
 
