@@ -84,8 +84,20 @@ def _normalize_symbol(value: Any) -> str:
     return str(value or "").strip().upper()
 
 
-def _compact_symbol(value: Any) -> str:
-    return "".join(ch for ch in _normalize_symbol(value) if ch.isalnum())
+def _symbol_tokens(value: Any) -> list[str]:
+    text = _normalize_symbol(value)
+    tokens: list[str] = []
+    buf: list[str] = []
+    for ch in text:
+        if ch.isalnum():
+            buf.append(ch)
+            continue
+        if buf:
+            tokens.append("".join(buf))
+            buf = []
+    if buf:
+        tokens.append("".join(buf))
+    return tokens
 
 
 def _normalize_market_id(exchange: str, value: Any) -> Optional[str | int]:
@@ -101,46 +113,61 @@ def _normalize_market_id(exchange: str, value: Any) -> Optional[str | int]:
 
 
 def _pick_market_item(symbol: str, items: list[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    upper = _normalize_symbol(symbol)
-    if not upper:
+    base = _normalize_symbol(symbol)
+    if not base:
         return None
-    compact = _compact_symbol(upper)
 
     def _sym(item: Dict[str, Any]) -> str:
         return _normalize_symbol(item.get("symbol"))
 
-    def _comp(item: Dict[str, Any]) -> str:
-        return _compact_symbol(item.get("symbol"))
+    def _base_match(sym: str) -> bool:
+        if not sym:
+            return False
+        if sym == base:
+            return True
+        tokens = _symbol_tokens(sym)
+        if tokens and tokens[0] == base:
+            return True
+        if sym.startswith(base):
+            remainder = sym[len(base) :]
+            if not remainder:
+                return True
+            if remainder[0] in "-_:/":
+                return True
+            if remainder.startswith(("USDC", "USDT", "USD")):
+                return True
+        return False
 
-    candidates = [
-        item
-        for item in items
-        if upper in _sym(item) or (compact and compact in _comp(item))
-    ]
+    candidates = [item for item in items if _base_match(_sym(item))]
     if not candidates:
         return None
 
     def _score(item: Dict[str, Any]) -> int:
         sym = _sym(item)
-        comp = _comp(item)
         score = 0
-        if sym == upper:
+        if sym == base:
             score += 6
-        if compact and comp == compact:
-            score += 5
-        if sym.startswith(upper):
-            score += 3
-        if upper in sym:
-            score += 2
-        if compact and compact in comp:
+        tokens = _symbol_tokens(sym)
+        if tokens and tokens[0] == base:
+            score += 4
+        if sym.startswith(base):
             score += 2
         if "USDC" in sym:
-            score += 1
+            score += 3
         elif "USD" in sym:
+            score += 2
+        elif "USDT" in sym:
             score += 1
         return score
 
     return max(candidates, key=_score)
+
+
+def _market_id_matches_symbol(exchange: str, symbol: str, market_id: Any) -> bool:
+    if exchange not in {"paradex", "grvt"}:
+        return True
+    mid = _normalize_symbol(market_id)
+    return bool(_pick_market_item(symbol, [{"symbol": mid, "market_id": mid}]))
 
 
 def _now_ms() -> int:
@@ -856,6 +883,8 @@ class BotManager:
 
                 exchange_name = _exchange_name(strat.get("exchange") or (cfg.get("exchange", {}) or {}).get("name"))
                 market_id = _normalize_market_id(exchange_name, strat.get("market_id"))
+                if market_id is not None and not _market_id_matches_symbol(exchange_name, symbol, market_id):
+                    market_id = None
                 if market_id is None:
                     market_id = await self._resolve_market_id(symbol, trader, cfg, strat)
                 if market_id is None:

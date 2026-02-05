@@ -89,6 +89,22 @@ def _normalize_symbol(value: Any) -> str:
     return str(value or "").strip().upper()
 
 
+def _symbol_tokens(value: Any) -> list[str]:
+    text = _normalize_symbol(value)
+    tokens: list[str] = []
+    buf: list[str] = []
+    for ch in text:
+        if ch.isalnum():
+            buf.append(ch)
+            continue
+        if buf:
+            tokens.append("".join(buf))
+            buf = []
+    if buf:
+        tokens.append("".join(buf))
+    return tokens
+
+
 def _normalize_market_id(exchange: str, value: Any) -> Optional[str | int]:
     if value is None:
         return None
@@ -102,26 +118,61 @@ def _normalize_market_id(exchange: str, value: Any) -> Optional[str | int]:
 
 
 def _pick_market_item(symbol: str, items: list[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    upper = _normalize_symbol(symbol)
-    if not upper:
+    base = _normalize_symbol(symbol)
+    if not base:
         return None
+
     def _sym(item: Dict[str, Any]) -> str:
-        return str(item.get("symbol") or "").upper()
-    exact = [item for item in items if _sym(item) == upper]
-    candidates = exact if exact else [item for item in items if upper in _sym(item)]
+        return _normalize_symbol(item.get("symbol"))
+
+    def _base_match(sym: str) -> bool:
+        if not sym:
+            return False
+        if sym == base:
+            return True
+        tokens = _symbol_tokens(sym)
+        if tokens and tokens[0] == base:
+            return True
+        if sym.startswith(base):
+            remainder = sym[len(base) :]
+            if not remainder:
+                return True
+            if remainder[0] in "-_:/":
+                return True
+            if remainder.startswith(("USDC", "USDT", "USD")):
+                return True
+        return False
+
+    candidates = [item for item in items if _base_match(_sym(item))]
     if not candidates:
         return None
+
     def _score(item: Dict[str, Any]) -> int:
         sym = _sym(item)
         score = 0
-        if sym == upper:
-            score += 5
+        if sym == base:
+            score += 6
+        tokens = _symbol_tokens(sym)
+        if tokens and tokens[0] == base:
+            score += 4
+        if sym.startswith(base):
+            score += 2
         if "USDC" in sym:
             score += 3
         elif "USD" in sym:
             score += 2
+        elif "USDT" in sym:
+            score += 1
         return score
+
     return max(candidates, key=_score)
+
+
+def _market_id_matches_symbol(exchange: str, symbol: str, market_id: Any) -> bool:
+    if exchange not in {"paradex", "grvt"}:
+        return True
+    mid = _normalize_symbol(market_id)
+    return bool(_pick_market_item(symbol, [{"symbol": mid, "market_id": mid}]))
 
 
 async def _fetch_markets_for_exchange(exchange: str, env: str) -> list[Dict[str, Any]]:
@@ -180,6 +231,8 @@ async def _fill_strategy_market_ids(
             strat["exchange"] = exchange
             updated = True
         market_id = _normalize_market_id(exchange, strat.get("market_id"))
+        if market_id is not None and not _market_id_matches_symbol(exchange, symbol, market_id):
+            market_id = None
         if market_id is None:
             resolved = await _resolve_market_id(request, exchange, env, symbol, cache)
             if resolved is not None:
