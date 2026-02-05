@@ -10,8 +10,11 @@ from typing import Any, Dict, Optional
 
 from app.core.config_store import ConfigStore
 from app.core.logbus import LogBus
+from app.exchanges.grvt.sdk_ops import fetch_perp_markets as grvt_fetch_perp_markets
 from app.exchanges.grvt.trader import GrvtTrader
+from app.exchanges.lighter.sdk_ops import fetch_perp_markets as lighter_fetch_perp_markets
 from app.exchanges.lighter.trader import LighterTrader
+from app.exchanges.paradex.sdk_ops import fetch_perp_markets as paradex_fetch_perp_markets
 from app.exchanges.paradex.trader import ParadexTrader
 from app.exchanges.types import MarketMeta, Trader
 from app.services.history_store import HistoryStore
@@ -66,6 +69,78 @@ def _safe_int(v: Any, default: int) -> int:
         return int(float(v))
     except Exception:
         return default
+
+
+def _exchange_name(value: Any) -> str:
+    name = str(value or "").strip().lower()
+    if name == "paradex":
+        return "paradex"
+    if name == "grvt":
+        return "grvt"
+    return "lighter"
+
+
+def _normalize_symbol(value: Any) -> str:
+    return str(value or "").strip().upper()
+
+
+def _compact_symbol(value: Any) -> str:
+    return "".join(ch for ch in _normalize_symbol(value) if ch.isalnum())
+
+
+def _normalize_market_id(exchange: str, value: Any) -> Optional[str | int]:
+    if value is None:
+        return None
+    if exchange in {"paradex", "grvt"}:
+        text = str(value).strip()
+        return text or None
+    try:
+        return int(str(value).strip())
+    except Exception:
+        return None
+
+
+def _pick_market_item(symbol: str, items: list[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    upper = _normalize_symbol(symbol)
+    if not upper:
+        return None
+    compact = _compact_symbol(upper)
+
+    def _sym(item: Dict[str, Any]) -> str:
+        return _normalize_symbol(item.get("symbol"))
+
+    def _comp(item: Dict[str, Any]) -> str:
+        return _compact_symbol(item.get("symbol"))
+
+    candidates = [
+        item
+        for item in items
+        if upper in _sym(item) or (compact and compact in _comp(item))
+    ]
+    if not candidates:
+        return None
+
+    def _score(item: Dict[str, Any]) -> int:
+        sym = _sym(item)
+        comp = _comp(item)
+        score = 0
+        if sym == upper:
+            score += 6
+        if compact and comp == compact:
+            score += 5
+        if sym.startswith(upper):
+            score += 3
+        if upper in sym:
+            score += 2
+        if compact and compact in comp:
+            score += 2
+        if "USDC" in sym:
+            score += 1
+        elif "USD" in sym:
+            score += 1
+        return score
+
+    return max(candidates, key=_score)
 
 
 def _now_ms() -> int:
@@ -301,6 +376,10 @@ class BotManager:
         self._history = HistoryStore(self._config.path.parent / "runtime_history.jsonl")
         self._history_recorded: set[str] = set()
         self._trade_pnl: Dict[str, TradePnlState] = {}
+        self._markets_cache: Dict[tuple[str, str], tuple[float, list[Dict[str, Any]]]] = {}
+        self._market_resolve_next: Dict[tuple[str, str], float] = {}
+        self._markets_cache_ttl_s = 60.0
+        self._market_resolve_cooldown_s = 20.0
 
     async def start(self, symbol: str, trader: Trader, manual: bool = True) -> None:
         symbol = symbol.upper()
@@ -335,6 +414,93 @@ class BotManager:
             )
             self._tasks[symbol] = asyncio.create_task(self._run(symbol, trader))
         self._logbus.publish(f"bot.start symbol={symbol}")
+
+    async def _load_markets(self, exchange: str, env: str) -> list[Dict[str, Any]]:
+        now = time.time()
+        key = (exchange, env)
+        cached = self._markets_cache.get(key)
+        if cached and now - cached[0] <= self._markets_cache_ttl_s:
+            return cached[1]
+        items: list[Dict[str, Any]] = []
+        try:
+            if exchange == "paradex":
+                items = await paradex_fetch_perp_markets(env)
+            elif exchange == "grvt":
+                items = await grvt_fetch_perp_markets(env)
+            else:
+                items = await lighter_fetch_perp_markets(env)
+        except Exception as exc:
+            self._logbus.publish(f"market.resolve.error exchange={exchange} env={env} err={type(exc).__name__}:{exc}")
+            items = []
+        self._markets_cache[key] = (now, items)
+        return items
+
+    async def _resolve_market_id(
+        self,
+        symbol: str,
+        trader: Trader,
+        cfg: Dict[str, Any],
+        strat: Dict[str, Any],
+    ) -> Optional[str | int]:
+        symbol = _normalize_symbol(symbol)
+        exchange = _exchange_name(strat.get("exchange") or (cfg.get("exchange", {}) or {}).get("name"))
+        if not exchange:
+            if isinstance(trader, ParadexTrader):
+                exchange = "paradex"
+            elif isinstance(trader, GrvtTrader):
+                exchange = "grvt"
+            else:
+                exchange = "lighter"
+        env = str((cfg.get("exchange", {}) or {}).get("env") or "mainnet")
+        now = time.time()
+        cooldown_key = (exchange, symbol)
+        next_ts = self._market_resolve_next.get(cooldown_key, 0.0)
+        if now < next_ts:
+            return None
+        self._market_resolve_next[cooldown_key] = now + self._market_resolve_cooldown_s
+
+        items = await self._load_markets(exchange, env)
+        if not items and isinstance(trader, GrvtTrader):
+            try:
+                if not trader._api.markets:
+                    await trader._api.load_markets()
+                items = [{"symbol": key, "market_id": key} for key in trader._api.markets.keys()]
+            except Exception as exc:
+                self._logbus.publish(
+                    f"market.resolve.error exchange={exchange} env={env} err={type(exc).__name__}:{exc}"
+                )
+
+        picked = _pick_market_item(symbol, items)
+        if not picked:
+            self._logbus.publish(f"market.resolve.miss symbol={symbol} exchange={exchange}")
+            return None
+
+        market_id = _normalize_market_id(exchange, picked.get("market_id"))
+        if market_id is None:
+            self._logbus.publish(f"market.resolve.invalid symbol={symbol} exchange={exchange}")
+            return None
+
+        strat["market_id"] = market_id
+        if not str(strat.get("exchange") or "").strip():
+            strat["exchange"] = exchange
+        try:
+            cfg = dict(cfg)
+            strategies = cfg.get("strategies") or {}
+            if isinstance(strategies, dict) and symbol in strategies:
+                entry = strategies[symbol]
+                if isinstance(entry, dict):
+                    entry["market_id"] = market_id
+                    if not str(entry.get("exchange") or "").strip():
+                        entry["exchange"] = exchange
+                    cfg["strategies"] = strategies
+                    self._config.write(cfg)
+        except Exception as exc:
+            self._logbus.publish(
+                f"market.resolve.persist.error symbol={symbol} exchange={exchange} err={type(exc).__name__}:{exc}"
+            )
+
+        self._logbus.publish(f"market.resolve.ok symbol={symbol} exchange={exchange} market_id={market_id}")
+        return market_id
 
     async def stop(self, symbol: str) -> None:
         symbol = symbol.upper()
@@ -688,12 +854,11 @@ class BotManager:
                     await self._update_status(symbol, running=True, message="已禁用", last_tick_at=_now_iso())
                     continue
 
-                market_value = strat.get("market_id")
-                if isinstance(market_value, str):
-                    market_id = market_value.strip()
-                else:
-                    market_id = market_value
-                if market_id is None or (isinstance(market_id, str) and not market_id):
+                exchange_name = _exchange_name(strat.get("exchange") or (cfg.get("exchange", {}) or {}).get("name"))
+                market_id = _normalize_market_id(exchange_name, strat.get("market_id"))
+                if market_id is None:
+                    market_id = await self._resolve_market_id(symbol, trader, cfg, strat)
+                if market_id is None:
                     await self._update_status(symbol, running=True, message="未配置 market_id", last_tick_at=_now_iso())
                     continue
 
