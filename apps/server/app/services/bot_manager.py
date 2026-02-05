@@ -619,6 +619,18 @@ class BotManager:
             return state.realized_pnl
         return state.realized_pnl + (mid * state.position_base - state.position_cost)
 
+    async def lighter_trade_pnl(
+        self,
+        trader: LighterTrader,
+        symbol: str,
+        market_id: int,
+        start_ms: int,
+        end_ms: int,
+        mid: Decimal,
+    ) -> Decimal:
+        state = await self._lighter_update_trade_pnl(trader, symbol, market_id, start_ms, end_ms)
+        return self._trade_pnl_value(state, mid)
+
     def _sim_match_orders(self, symbol: str, bid: Decimal, ask: Decimal, now_ms: int) -> None:
         state = self._sim_state(symbol)
         if not state.orders:
@@ -1238,17 +1250,20 @@ class BotManager:
     ) -> tuple[Decimal, int]:
         total = Decimal(0)
         count = 0
+        auth_token = await trader.auth_token()
         cursor = None
         pages = 0
         reached_old = False
         while pages < max_pages and not reached_old:
-            resp = await trader._order_api.trades(
+            resp = await trader._call_with_retry(
+                trader._order_api.trades,
                 sort_by="timestamp",
                 limit=100,
                 market_id=int(market_id),
                 account_index=int(trader.account_index),
                 sort_dir="desc",
                 cursor=cursor,
+                auth=auth_token,
             )
             trades = getattr(resp, "trades", None)
             if trades is None and isinstance(resp, dict):
@@ -1285,17 +1300,20 @@ class BotManager:
         if state.last_ts_ms <= 0 or state.last_ts_ms < start_ms:
             state.last_ts_ms = start_ms - 1
 
+        auth_token = await trader.auth_token()
         cursor = None
         pages = 0
         processed = 0
         while pages < max_pages:
-            resp = await trader._order_api.trades(
+            resp = await trader._call_with_retry(
+                trader._order_api.trades,
                 sort_by="timestamp",
                 limit=200,
                 market_id=int(market_id),
                 account_index=int(trader.account_index),
                 sort_dir="asc",
                 cursor=cursor,
+                auth=auth_token,
             )
             trades = getattr(resp, "trades", None)
             if trades is None and isinstance(resp, dict):

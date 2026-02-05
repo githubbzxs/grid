@@ -968,17 +968,46 @@ async def runtime_status(
             except Exception:
                 pass
 
+        mid_value = _safe_decimal(status.get("mid") or 0)
+        if mid_value <= 0 and market_id is not None:
+            try:
+                bid, ask = await trader.best_bid_ask(market_id)
+                if bid is not None and ask is not None:
+                    mid_value = (bid + ask) / 2
+            except Exception:
+                mid_value = Decimal(0)
+
         pnl_now = Decimal(0)
         pos_base = Decimal(0)
+        use_base = True
         if market_id is not None:
             pnl_item = positions_map.get(market_id)
             if pnl_item:
                 pnl_now = _safe_decimal(pnl_item.get("pnl"))
                 pos_base = _safe_decimal(pnl_item.get("base"))
 
-        if entry.get("base_pnl") is None:
-            entry["base_pnl"] = pnl_now
-        profit = pnl_now - _safe_decimal(entry.get("base_pnl") or 0)
+        if name == "lighter" and isinstance(trader, LighterTrader) and isinstance(market_id, int):
+            use_base = False
+            try:
+                pnl_now = await request.app.state.bot_manager.lighter_trade_pnl(
+                    trader,
+                    symbol,
+                    int(market_id),
+                    start_ms,
+                    now_ms,
+                    mid_value,
+                )
+            except Exception as exc:
+                request.app.state.logbus.publish(
+                    f"runtime.pnl.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}"
+                )
+
+        if use_base:
+            if entry.get("base_pnl") is None:
+                entry["base_pnl"] = pnl_now
+            profit = pnl_now - _safe_decimal(entry.get("base_pnl") or 0)
+        else:
+            profit = pnl_now
 
         volume = Decimal(0)
         trade_count = 0
@@ -993,15 +1022,6 @@ async def runtime_status(
             request.app.state.logbus.publish(
                 f"runtime.trades.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}"
             )
-
-        mid_value = _safe_decimal(status.get("mid") or 0)
-        if mid_value <= 0 and market_id is not None:
-            try:
-                bid, ask = await trader.best_bid_ask(market_id)
-                if bid is not None and ask is not None:
-                    mid_value = (bid + ask) / 2
-            except Exception:
-                mid_value = Decimal(0)
 
         position_notional = abs(pos_base * mid_value) if mid_value > 0 else Decimal(0)
         open_orders = int(status.get("existing") or 0)
