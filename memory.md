@@ -56,6 +56,7 @@
 
 ## 4. 📝 Key Decisions Log (关键决策记录)
 
+- **[2026-02-05]**: 本机通过 scripts/start.bat 启动服务，WebUI 可在 http://127.0.0.1:9999/login 访问（未登录状态）。
 - **[2026-02-05]**: 同步远程仓库到最新 `origin/main`（拉取包含 GRVT 适配新增与 WebUI 更新的提交）。
 - **[2026-02-04]**: Lighter 成交统计新增 auth token 与重试机制，修复统计为 0 的问题。
 - **[2026-02-04]**: 拆分 GRVT 依赖到 requirements-grvt.txt，并以 --no-deps 安装，规避 websockets 版本冲突。
@@ -77,4 +78,4 @@
 
 ---
 
-**Last Updated**: 2026-02-05 19:57
+**Last Updated**: 2026-02-05 20:01
