@@ -305,7 +305,7 @@ button.danger {
 }
 
 .secret-status {
-  display: inline-flex;
+  display: none;
   align-items: center;
   gap: 6px;
   padding: 4px 10px;

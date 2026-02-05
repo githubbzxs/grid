@@ -843,12 +843,6 @@ async function saveConfig() {
 
   const resp = await apiFetch("/api/config", { method: "POST", body: { exchange } });
   fillConfig(resp.config || {});
-  els.exApiKey.value = "";
-  if (els.exEthKey) els.exEthKey.value = "";
-  if (els.grvtApiKey) els.grvtApiKey.value = "";
-  if (els.grvtPrivateKey) els.grvtPrivateKey.value = "";
-  if (els.pxL1Key) els.pxL1Key.value = "";
-  if (els.pxL2Key) els.pxL2Key.value = "";
 }
 
 function numOrNull(v) {
