@@ -318,6 +318,7 @@ class BotStatus:
     center: Optional[str] = None
     desired: int = 0
     existing: int = 0
+    delay_count: int = 0
     reduce_mode: bool = False
     stop_signal: bool = False
     stop_reason: str = ""
@@ -334,6 +335,7 @@ class BotStatus:
             "center": self.center,
             "desired": self.desired,
             "existing": self.existing,
+            "delay_count": self.delay_count,
             "reduce_mode": self.reduce_mode,
             "stop_signal": self.stop_signal,
             "stop_reason": self.stop_reason,
@@ -403,6 +405,8 @@ class BotManager:
         self._history = HistoryStore(self._config.path.parent / "runtime_history.jsonl")
         self._history_recorded: set[str] = set()
         self._trade_pnl: Dict[str, TradePnlState] = {}
+        self._delay_counts: Dict[str, int] = {}
+        self._delay_price_marks: Dict[str, set[str]] = {}
         self._markets_cache: Dict[tuple[str, str], tuple[float, list[Dict[str, Any]]]] = {}
         self._market_resolve_next: Dict[tuple[str, str], float] = {}
         self._markets_cache_ttl_s = 60.0
@@ -422,6 +426,8 @@ class BotManager:
                 self._peak_pnl.pop(symbol, None)
                 self._sim_reset(symbol)
                 self._trade_pnl_reset(symbol)
+                self._delay_counts.pop(symbol, None)
+                self._delay_price_marks.pop(symbol, None)
                 self._history_recorded.discard(symbol)
                 self._start_ms[symbol] = _now_ms()
             elif symbol not in self._start_ms:
@@ -1254,6 +1260,33 @@ class BotManager:
                 missing_asks = len(missing_ask_prices)
                 missing_bids = len(missing_bid_prices)
 
+                delay_count = self._delay_counts.get(symbol, 0)
+                if grid_mode == GRID_MODE_DYNAMIC:
+                    delay_marks = self._delay_price_marks.get(symbol)
+                    if delay_marks is None:
+                        delay_marks = set()
+                        self._delay_price_marks[symbol] = delay_marks
+                    active_missing: set[str] = set()
+                    for price in missing_ask_prices:
+                        price_q = _quantize(price, meta.price_decimals, ROUND_HALF_UP)
+                        key = f"ask:{price_q}"
+                        active_missing.add(key)
+                        if mid >= price_q and key not in delay_marks:
+                            delay_marks.add(key)
+                            delay_count += 1
+                    for price in missing_bid_prices:
+                        price_q = _quantize(price, meta.price_decimals, ROUND_HALF_UP)
+                        key = f"bid:{price_q}"
+                        active_missing.add(key)
+                        if mid <= price_q and key not in delay_marks:
+                            delay_marks.add(key)
+                            delay_count += 1
+                    if delay_marks:
+                        delay_marks.intersection_update(active_missing)
+                    self._delay_counts[symbol] = delay_count
+                else:
+                    self._delay_price_marks.pop(symbol, None)
+
                 if cancel_orders or (missing_asks + missing_bids) > 0:
                     self._logbus.publish(
                         f"grid.reconcile symbol={symbol} market_id={market_id} existing={total_existing} cancel={len(cancel_orders)} missing_asks={missing_asks} missing_bids={missing_bids}"
@@ -1413,6 +1446,7 @@ class BotManager:
                     center=str(center),
                     desired=(len(desired_asks) + len(desired_bids)),
                     existing=len(existing),
+                    delay_count=delay_count,
                     reduce_mode=reduce_mode,
                     stop_signal=stop_signal,
                     stop_reason=stop_reason,

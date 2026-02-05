@@ -932,6 +932,7 @@ function renderRuntimeStatus(data) {
         <td class="mono">${escapeHtml(String(r.trade_count || 0))}</td>
         <td class="mono">${escapeHtml(fmtNumber(r.position_notional, 4))}</td>
         <td class="mono">${escapeHtml(String(r.open_orders || 0))}</td>
+        <td class="mono">${escapeHtml(String(r.delay_count || 0))}</td>
         <td class="mono">${escapeHtml(reduce)}</td>
       </tr>`;
     })

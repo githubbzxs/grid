@@ -1070,6 +1070,7 @@ async def runtime_status(
                 "trade_count": trade_count,
                 "position_notional": _fmt_decimal(position_notional),
                 "open_orders": open_orders,
+                "delay_count": int(status.get("delay_count") or 0),
                 "reduce_mode": reduce_mode,
             }
 
@@ -1214,6 +1215,7 @@ async def runtime_status(
             "trade_count": trade_count,
             "position_notional": _fmt_decimal(position_notional),
             "open_orders": open_orders,
+            "delay_count": int(status.get("delay_count") or 0),
             "reduce_mode": reduce_mode,
         }
 
