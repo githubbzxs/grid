@@ -408,6 +408,7 @@ class BotManager:
         self._delay_counts: Dict[str, int] = {}
         self._delay_price_marks: Dict[str, set[str]] = {}
         self._create_block_notice: Dict[str, tuple[int, str]] = {}
+        self._cid_level_cursor: Dict[str, Dict[str, int]] = {}
         self._markets_cache: Dict[tuple[str, str], tuple[float, list[Dict[str, Any]]]] = {}
         self._market_resolve_next: Dict[tuple[str, str], float] = {}
         self._markets_cache_ttl_s = 60.0
@@ -637,6 +638,34 @@ class BotManager:
 
     def _sim_update_mid(self, symbol: str, mid: Decimal) -> None:
         self._sim_state(symbol).last_mid = mid
+
+    def _pick_level_with_cursor(self, symbol: str, side: str, free_levels: list[int]) -> Optional[int]:
+        if not free_levels:
+            return None
+        sym = symbol.upper()
+        side_key = "ask" if side == "ask" else "bid"
+        cursor = self._cid_level_cursor.get(sym)
+        if cursor is None:
+            seed = (_now_ms() % MAX_LEVEL_PER_SIDE) + 1
+            cursor = {
+                "ask": int(seed),
+                "bid": int((seed % MAX_LEVEL_PER_SIDE) + 1),
+            }
+            self._cid_level_cursor[sym] = cursor
+        start = int(cursor.get(side_key, 1))
+        levels = sorted(free_levels)
+        picked: Optional[int] = None
+        for lvl in levels:
+            if lvl >= start:
+                picked = lvl
+                break
+        if picked is None:
+            picked = levels[0]
+        next_level = int(picked) + 1
+        if next_level > MAX_LEVEL_PER_SIDE:
+            next_level = 1
+        cursor[side_key] = next_level
+        return picked
 
     def _append_mid_history(self, symbol: str, ts_ms: int, mid: Decimal, max_points: int) -> list[tuple[int, Decimal]]:
         history = self._mid_history.get(symbol)
@@ -1359,12 +1388,26 @@ class BotManager:
                             if not free_ask_levels:
                                 self._logbus.publish(f"grid.no_free_id symbol={symbol} side=ask")
                                 continue
-                            level = free_ask_levels.pop(0)
+                            if isinstance(trader, GrvtTrader):
+                                level = self._pick_level_with_cursor(symbol, "ask", free_ask_levels)
+                                if level is None:
+                                    self._logbus.publish(f"grid.no_free_id symbol={symbol} side=ask")
+                                    continue
+                                free_ask_levels.remove(level)
+                            else:
+                                level = free_ask_levels.pop(0)
                         else:
                             if not free_bid_levels:
                                 self._logbus.publish(f"grid.no_free_id symbol={symbol} side=bid")
                                 continue
-                            level = free_bid_levels.pop(0)
+                            if isinstance(trader, GrvtTrader):
+                                level = self._pick_level_with_cursor(symbol, "bid", free_bid_levels)
+                                if level is None:
+                                    self._logbus.publish(f"grid.no_free_id symbol={symbol} side=bid")
+                                    continue
+                                free_bid_levels.remove(level)
+                            else:
+                                level = free_bid_levels.pop(0)
 
                         price_q = _quantize(price, meta.price_decimals, ROUND_HALF_UP)
                         size_value_effective = size_value
