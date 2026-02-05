@@ -534,6 +534,11 @@ function setSecretStatus(el, saved) {
   el.classList.toggle("empty", !saved);
 }
 
+function setFieldValue(el, value) {
+  if (!el) return;
+  el.value = value == null ? "" : String(value);
+}
+
 function showApp(show) {
   els.appArea.hidden = !show;
 }
@@ -684,61 +689,61 @@ async function lock() {
 
 function fillConfig(cfg) {
   const ex = cfg.exchange || {};
-  els.exName.value = ex.name || "lighter";
-  els.exEnv.value = ex.env || "mainnet";
-  els.exL1.value = ex.l1_address || "";
-  els.exAccount.value = ex.account_index == null ? "" : String(ex.account_index);
-  els.exKeyIndex.value = ex.api_key_index == null ? "" : String(ex.api_key_index);
+  setFieldValue(els.exName, ex.name || "lighter");
+  setFieldValue(els.exEnv, ex.env || "mainnet");
+  setFieldValue(els.exL1, ex.l1_address || "");
+  setFieldValue(els.exAccount, ex.account_index == null ? "" : ex.account_index);
+  setFieldValue(els.exKeyIndex, ex.api_key_index == null ? "" : ex.api_key_index);
   if (els.exRemember) {
-    els.exRemember.value = String(Boolean(ex.remember_secrets));
+    setFieldValue(els.exRemember, Boolean(ex.remember_secrets));
   }
   setSecretStatus(els.exApiKeyHint, Boolean(ex.api_private_key_set));
   setSecretStatus(els.exEthKeyHint, Boolean(ex.eth_private_key_set));
   if (els.grvtAccountId) {
-    els.grvtAccountId.value = ex.grvt_account_id || "";
+    setFieldValue(els.grvtAccountId, ex.grvt_account_id || "");
   }
   setSecretStatus(els.grvtApiKeyHint, Boolean(ex.grvt_api_key_set));
   setSecretStatus(els.grvtPrivateKeyHint, Boolean(ex.grvt_private_key_set));
   if (els.pxL1) {
-    els.pxL1.value = ex.paradex_l1_address || "";
+    setFieldValue(els.pxL1, ex.paradex_l1_address || "");
   }
   if (els.pxL2) {
-    els.pxL2.value = ex.paradex_l2_address || "";
+    setFieldValue(els.pxL2, ex.paradex_l2_address || "");
   }
   setSecretStatus(els.pxL1KeyHint, Boolean(ex.paradex_l1_private_key_set));
   setSecretStatus(els.pxL2KeyHint, Boolean(ex.paradex_l2_private_key_set));
 
   const rt = cfg.runtime || {};
-  els.runtimeDryRun.value = String(Boolean(rt.dry_run));
+  setFieldValue(els.runtimeDryRun, Boolean(rt.dry_run));
   if (els.runtimeSimulateFill) {
     const simFill = rt.simulate_fill == null ? false : Boolean(rt.simulate_fill);
-    els.runtimeSimulateFill.value = String(simFill);
+    setFieldValue(els.runtimeSimulateFill, simFill);
   }
   syncSimulateFillState();
   if (els.runtimeStatusInterval) {
-    els.runtimeStatusInterval.value = rt.status_refresh_ms == null ? "1000" : String(rt.status_refresh_ms);
+    setFieldValue(els.runtimeStatusInterval, rt.status_refresh_ms == null ? "1000" : rt.status_refresh_ms);
   }
   if (els.runtimeAutoRestart) {
     const autoRestart = rt.auto_restart == null ? true : Boolean(rt.auto_restart);
-    els.runtimeAutoRestart.value = String(autoRestart);
+    setFieldValue(els.runtimeAutoRestart, autoRestart);
   }
   if (els.runtimeRestartDelay) {
-    els.runtimeRestartDelay.value = rt.restart_delay_ms == null ? "1000" : String(rt.restart_delay_ms);
+    setFieldValue(els.runtimeRestartDelay, rt.restart_delay_ms == null ? "1000" : rt.restart_delay_ms);
   }
   if (els.runtimeRestartMax) {
-    els.runtimeRestartMax.value = rt.restart_max == null ? "5" : String(rt.restart_max);
+    setFieldValue(els.runtimeRestartMax, rt.restart_max == null ? "5" : rt.restart_max);
   }
   if (els.runtimeRestartWindow) {
-    els.runtimeRestartWindow.value = rt.restart_window_ms == null ? "60000" : String(rt.restart_window_ms);
+    setFieldValue(els.runtimeRestartWindow, rt.restart_window_ms == null ? "60000" : rt.restart_window_ms);
   }
   if (els.runtimeStopMinutes) {
-    els.runtimeStopMinutes.value = rt.stop_after_minutes == null ? "0" : String(rt.stop_after_minutes);
+    setFieldValue(els.runtimeStopMinutes, rt.stop_after_minutes == null ? "0" : rt.stop_after_minutes);
   }
   if (els.runtimeStopVolume) {
-    els.runtimeStopVolume.value = rt.stop_after_volume == null ? "0" : String(rt.stop_after_volume);
+    setFieldValue(els.runtimeStopVolume, rt.stop_after_volume == null ? "0" : rt.stop_after_volume);
   }
   if (els.historyLimit && !els.historyLimit.value) {
-    els.historyLimit.value = "200";
+    setFieldValue(els.historyLimit, "200");
   }
 
   const st = normalizeStrategies(cfg.strategies || {});
@@ -835,13 +840,15 @@ async function resolveAccountIndex() {
   const l1 = els.exL1.value.trim();
   if (!l1) throw new Error("请先填写 L1 地址");
   const resp = await apiFetch("/api/lighter/resolve_account_index", { method: "POST", body: { env, l1_address: l1 } });
-  els.exAccount.value = String(resp.account_index);
+  setFieldValue(els.exAccount, resp.account_index);
 }
 
 async function testConnection() {
   const exchange = currentExchange();
   const resp = await apiFetch(`/api/exchange/test_connection?exchange=${encodeURIComponent(exchange)}`, { method: "POST" });
-  els.testOutput.value = JSON.stringify(resp.result || {}, null, 2);
+  if (els.testOutput) {
+    els.testOutput.value = JSON.stringify(resp.result || {}, null, 2);
+  }
 }
 
 async function refreshAccount() {
