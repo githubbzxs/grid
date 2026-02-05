@@ -270,6 +270,14 @@ class SimState:
     last_mid: Decimal = Decimal(0)
 
 
+@dataclass
+class TradePnlState:
+    last_ts_ms: int = 0
+    position_base: Decimal = Decimal(0)
+    position_cost: Decimal = Decimal(0)
+    realized_pnl: Decimal = Decimal(0)
+
+
 class BotManager:
     def __init__(self, logbus: LogBus, config: ConfigStore) -> None:
         self._logbus = logbus
@@ -292,6 +300,7 @@ class BotManager:
         self._mid_history: Dict[str, list[tuple[int, Decimal]]] = {}
         self._history = HistoryStore(self._config.path.parent / "runtime_history.jsonl")
         self._history_recorded: set[str] = set()
+        self._trade_pnl: Dict[str, TradePnlState] = {}
 
     async def start(self, symbol: str, trader: Trader, manual: bool = True) -> None:
         symbol = symbol.upper()
@@ -306,6 +315,7 @@ class BotManager:
                 self._base_pnl.pop(symbol, None)
                 self._peak_pnl.pop(symbol, None)
                 self._sim_reset(symbol)
+                self._trade_pnl_reset(symbol)
                 self._history_recorded.discard(symbol)
                 self._start_ms[symbol] = _now_ms()
             elif symbol not in self._start_ms:
@@ -338,6 +348,7 @@ class BotManager:
             self._peak_pnl.pop(symbol, None)
             self._history_recorded.discard(symbol)
             self._start_ms.pop(symbol, None)
+            self._trade_pnl_reset(symbol)
             restart_task = self._restart_tasks.pop(symbol, None)
             if restart_task and not restart_task.done():
                 restart_task.cancel()
@@ -383,6 +394,17 @@ class BotManager:
 
     def _sim_reset(self, symbol: str) -> None:
         self._sim_states.pop(symbol.upper(), None)
+
+    def _trade_pnl_state(self, symbol: str) -> TradePnlState:
+        sym = symbol.upper()
+        state = self._trade_pnl.get(sym)
+        if state is None:
+            state = TradePnlState()
+            self._trade_pnl[sym] = state
+        return state
+
+    def _trade_pnl_reset(self, symbol: str) -> None:
+        self._trade_pnl.pop(symbol.upper(), None)
 
     def sim_orders(self, symbol: str) -> list[SimOrder]:
         return list(self._sim_state(symbol).orders.values())
@@ -551,6 +573,51 @@ class BotManager:
                         state.position_cost = -price * remaining
 
         state.trades.append(SimTrade(ts_ms=ts_ms, price=price, size=size, side=side))
+
+    def _apply_trade_pnl(self, state: TradePnlState, side: str, price: Decimal, size: Decimal) -> None:
+        size = abs(size)
+        if size <= 0:
+            return
+        if side == "bid":
+            if state.position_base >= 0:
+                state.position_base += size
+                state.position_cost += price * size
+            else:
+                short_size = abs(state.position_base)
+                cover = min(size, short_size)
+                avg_entry = abs(state.position_cost / state.position_base) if state.position_base != 0 else Decimal(0)
+                state.realized_pnl += (avg_entry - price) * cover
+                remaining = size - cover
+                state.position_base += cover
+                if state.position_base < 0:
+                    state.position_cost = avg_entry * state.position_base
+                else:
+                    state.position_cost = Decimal(0)
+                    if remaining > 0:
+                        state.position_base = remaining
+                        state.position_cost = price * remaining
+        else:
+            if state.position_base <= 0:
+                state.position_base -= size
+                state.position_cost -= price * size
+            else:
+                cover = min(size, state.position_base)
+                avg_entry = abs(state.position_cost / state.position_base) if state.position_base != 0 else Decimal(0)
+                state.realized_pnl += (price - avg_entry) * cover
+                remaining = size - cover
+                state.position_base -= cover
+                if state.position_base > 0:
+                    state.position_cost = avg_entry * state.position_base
+                else:
+                    state.position_cost = Decimal(0)
+                    if remaining > 0:
+                        state.position_base = -remaining
+                        state.position_cost = -price * remaining
+
+    def _trade_pnl_value(self, state: TradePnlState, mid: Decimal) -> Decimal:
+        if mid <= 0:
+            return state.realized_pnl
+        return state.realized_pnl + (mid * state.position_base - state.position_cost)
 
     def _sim_match_orders(self, symbol: str, bid: Decimal, ask: Decimal, now_ms: int) -> None:
         state = self._sim_state(symbol)
@@ -1205,6 +1272,67 @@ class BotManager:
             pages += 1
         return total, count
 
+    async def _lighter_update_trade_pnl(
+        self,
+        trader: LighterTrader,
+        symbol: str,
+        market_id: int,
+        start_ms: int,
+        end_ms: int,
+        max_pages: int = 20,
+    ) -> TradePnlState:
+        state = self._trade_pnl_state(symbol)
+        if state.last_ts_ms <= 0 or state.last_ts_ms < start_ms:
+            state.last_ts_ms = start_ms - 1
+
+        cursor = None
+        pages = 0
+        processed = 0
+        while pages < max_pages:
+            resp = await trader._order_api.trades(
+                sort_by="timestamp",
+                limit=200,
+                market_id=int(market_id),
+                account_index=int(trader.account_index),
+                sort_dir="asc",
+                cursor=cursor,
+            )
+            trades = getattr(resp, "trades", None)
+            if trades is None and isinstance(resp, dict):
+                trades = resp.get("trades")
+            trades = trades or []
+            for t in trades:
+                ts = _trade_ts_ms(_order_field(t, "timestamp"))
+                if ts is None:
+                    continue
+                if ts <= state.last_ts_ms:
+                    continue
+                if ts < start_ms or ts > end_ms:
+                    continue
+                side = _order_side(t)
+                if side is None:
+                    continue
+                price = _safe_decimal(_order_field(t, "price") or 0)
+                size = _safe_decimal(_order_field(t, "size") or _order_field(t, "base_amount") or _order_field(t, "amount") or 0)
+                if price <= 0 or size <= 0:
+                    continue
+                self._apply_trade_pnl(state, side, price, size)
+                state.last_ts_ms = max(state.last_ts_ms, ts)
+                processed += 1
+
+            cursor = getattr(resp, "next_cursor", None) if not isinstance(resp, dict) else resp.get("next_cursor")
+            if not cursor:
+                break
+            pages += 1
+
+        if pages >= max_pages and cursor:
+            self._logbus.publish(f"lighter.trade_pnl.truncated symbol={symbol} market_id={market_id}")
+        if processed:
+            self._logbus.publish(
+                f"lighter.trade_pnl.update symbol={symbol} market_id={market_id} trades={processed} last_ts={state.last_ts_ms}"
+            )
+        return state
+
     def _paradex_fills_since(
         self,
         trader: ParadexTrader,
@@ -1495,14 +1623,17 @@ class BotManager:
             except Exception:
                 pass
 
-        pnl_now = await self._position_pnl(trader, market_id, symbol, simulate=simulate)
+        pnl_now: Optional[Decimal] = None
+        use_base = True
+        if simulate:
+            pnl_now = self.sim_pnl(symbol)
+            use_base = False
+        elif isinstance(trader, LighterTrader):
+            use_base = False
+        else:
+            pnl_now = await self._position_pnl(trader, market_id, symbol, simulate=simulate)
         if pnl_now is None:
             pnl_now = Decimal(0)
-        base_pnl = self._base_pnl.get(symbol)
-        if base_pnl is None:
-            self._base_pnl[symbol] = pnl_now
-            base_pnl = pnl_now
-        profit = pnl_now - _safe_decimal(base_pnl)
 
         volume = Decimal(0)
         trade_count = 0
@@ -1535,6 +1666,27 @@ class BotManager:
                     mid_value = (bid + ask) / 2
             except Exception:
                 mid_value = Decimal(0)
+
+        if isinstance(trader, LighterTrader) and not simulate:
+            try:
+                state = await self._lighter_update_trade_pnl(trader, symbol, int(market_id), start_ms, now_ms)
+                pnl_now = self._trade_pnl_value(state, mid_value)
+            except Exception as exc:
+                self._logbus.publish(
+                    f"lighter.trade_pnl.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}"
+                )
+                fallback = await self._position_pnl(trader, market_id, symbol, simulate=simulate)
+                if fallback is not None:
+                    pnl_now = fallback
+
+        if use_base:
+            base_pnl = self._base_pnl.get(symbol)
+            if base_pnl is None:
+                self._base_pnl[symbol] = pnl_now
+                base_pnl = pnl_now
+            profit = pnl_now - _safe_decimal(base_pnl)
+        else:
+            profit = pnl_now
 
         position_notional = abs(pos_base * mid_value) if mid_value > 0 else Decimal(0)
         open_orders = self.sim_open_orders(symbol) if simulate else int(status.existing or 0)
