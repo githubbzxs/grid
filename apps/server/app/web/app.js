@@ -42,7 +42,6 @@
 
   runtimeDryRun: document.getElementById("runtime-dry-run"),
   runtimeSimulateFill: document.getElementById("runtime-simulate-fill"),
-  runtimeInterval: document.getElementById("runtime-interval"),
   runtimeStatusInterval: document.getElementById("runtime-status-interval"),
   runtimeAutoRestart: document.getElementById("runtime-auto-restart"),
   runtimeRestartDelay: document.getElementById("runtime-restart-delay"),
@@ -716,7 +715,6 @@ function fillConfig(cfg) {
     els.runtimeSimulateFill.value = String(simFill);
   }
   syncSimulateFillState();
-  els.runtimeInterval.value = rt.loop_interval_ms == null ? "100" : String(rt.loop_interval_ms);
   if (els.runtimeStatusInterval) {
     els.runtimeStatusInterval.value = rt.status_refresh_ms == null ? "1000" : String(rt.status_refresh_ms);
   }
@@ -814,7 +812,6 @@ async function saveStrategies() {
   const runtime = {
     dry_run: dryRun,
     simulate_fill: dryRun && simulateFill,
-    loop_interval_ms: Math.floor(numOrZero(els.runtimeInterval.value)),
     status_refresh_ms: Math.floor(numOrZero(els.runtimeStatusInterval ? els.runtimeStatusInterval.value : 0)) || 1000,
     auto_restart: els.runtimeAutoRestart ? els.runtimeAutoRestart.value === "true" : true,
     restart_delay_ms: Math.floor(numOrZero(els.runtimeRestartDelay ? els.runtimeRestartDelay.value : 0)),

@@ -909,7 +909,7 @@ class BotManager:
         self._sim_apply_trade(symbol, side, price, size, _now_ms())
 
     async def _run(self, symbol: str, trader: Trader) -> None:
-        interval_s = 0.1
+        interval_s = 0.01
         try:
             while True:
                 await asyncio.sleep(interval_s)
@@ -918,14 +918,6 @@ class BotManager:
                 dry_run = bool(runtime.get("dry_run", True))
                 simulate = self._sim_enabled(runtime)
                 simulate_fill = self._sim_fill_enabled(runtime)
-                interval_ms = runtime.get("loop_interval_ms", 100)
-                try:
-                    interval_ms = float(interval_ms)
-                except Exception:
-                    interval_ms = 100.0
-                if interval_ms <= 0:
-                    interval_ms = 100.0
-                interval_s = max(0.01, interval_ms / 1000.0)
                 stop_after_minutes = _safe_decimal(runtime.get("stop_after_minutes") or 0)
                 stop_after_volume = _safe_decimal(runtime.get("stop_after_volume") or 0)
                 stop_check_interval_ms = _safe_int(runtime.get("stop_check_interval_ms"), 1000)

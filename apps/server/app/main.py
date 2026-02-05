@@ -582,6 +582,8 @@ def _paradex_fills_since(
 
 def _mask_config(config: Dict[str, Any]) -> Dict[str, Any]:
     exchange = dict(config.get("exchange", {}))
+    runtime = dict(config.get("runtime", {}))
+    runtime.pop("loop_interval_ms", None)
     exchange.pop("api_private_key_enc", None)
     exchange.pop("eth_private_key_enc", None)
     exchange.pop("grvt_api_key_enc", None)
@@ -595,6 +597,7 @@ def _mask_config(config: Dict[str, Any]) -> Dict[str, Any]:
     exchange["paradex_l1_private_key_set"] = bool(config.get("exchange", {}).get("paradex_l1_private_key_enc"))
     exchange["paradex_l2_private_key_set"] = bool(config.get("exchange", {}).get("paradex_l2_private_key_enc"))
     result = dict(config)
+    result["runtime"] = runtime
     result["exchange"] = exchange
     return result
 
@@ -742,6 +745,12 @@ async def update_config(
     fernet: Fernet = Depends(require_unlocked),
 ) -> Dict[str, Any]:
     config: Dict[str, Any] = request.app.state.config.read()
+    runtime_patch = patch.get("runtime")
+    if isinstance(runtime_patch, dict):
+        runtime_clean = dict(runtime_patch)
+        runtime_clean.pop("loop_interval_ms", None)
+        patch = dict(patch)
+        patch["runtime"] = runtime_clean
     exchange_patch = dict(patch.get("exchange") or {})
     plaintext_api_key = exchange_patch.pop("api_private_key", None)
     plaintext_eth_key = exchange_patch.pop("eth_private_key", None)
@@ -776,6 +785,11 @@ async def update_config(
 
     if patch:
         merged = _deep_merge(merged, patch)
+    runtime_cfg = merged.get("runtime")
+    if isinstance(runtime_cfg, dict):
+        runtime_cfg = dict(runtime_cfg)
+        runtime_cfg.pop("loop_interval_ms", None)
+        merged["runtime"] = runtime_cfg
 
     await _fill_strategy_market_ids(request, merged)
 
