@@ -981,6 +981,11 @@ class BotManager:
                 missing_asks = len(missing_ask_prices)
                 missing_bids = len(missing_bid_prices)
 
+                if cancel_orders or (missing_asks + missing_bids) > 0:
+                    self._logbus.publish(
+                        f"grid.reconcile symbol={symbol} market_id={market_id} existing={total_existing} cancel={len(cancel_orders)} missing_asks={missing_asks} missing_bids={missing_bids}"
+                    )
+
                 remaining_after_cancel = max(0, total_existing - len(cancel_orders))
                 available_slots = missing_asks + missing_bids
                 if max_open_orders > 0:
@@ -1022,6 +1027,7 @@ class BotManager:
                                     f"order.cancel.error symbol={symbol} market_id={market_id} order={order_index} err={type(exc).__name__}:{exc}"
                                 )
 
+                created_attempts = 0
                 if available_slots > 0 and (missing_asks + missing_bids) > 0:
                     plan_candidates: list[tuple[Decimal, str, Decimal]] = []
                     for price in missing_ask_prices:
@@ -1084,10 +1090,12 @@ class BotManager:
                             self._logbus.publish(
                                 f"sim.create symbol={symbol} market_id={market_id} id={oid} ask={side == 'ask'} price={price_int} size={base_int}"
                             )
+                            created_attempts += 1
                         elif dry_run:
                             self._logbus.publish(
                                 f"dry_run create symbol={symbol} market_id={market_id} id={oid} ask={side == 'ask'} price={price_int} size={base_int}"
                             )
+                            created_attempts += 1
                         else:
                             try:
                                 await trader.create_limit_order(
@@ -1099,8 +1107,14 @@ class BotManager:
                                     post_only=post_only,
                                 )
                                 self._logbus.publish(f"order.create symbol={symbol} market_id={market_id} id={oid}")
+                                created_attempts += 1
                             except Exception as exc:
                                 self._logbus.publish(f"order.create.error symbol={symbol} id={oid} err={type(exc).__name__}:{exc}")
+
+                if cancel_orders or created_attempts > 0:
+                    self._logbus.publish(
+                        f"grid.reconcile.done symbol={symbol} market_id={market_id} canceled={len(cancel_orders)} created={created_attempts}"
+                    )
 
                 if simulate_fill:
                     msg = "模拟成交"

@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.exchanges.lighter.public_api import base_url
 from app.exchanges.types import MarketMeta
+from app.core.logbus import LogBus
 
 
 def _parse_auth_expiry(auth_token: str) -> Optional[int]:
@@ -24,6 +25,7 @@ class LighterTrader:
         account_index: int,
         api_key_index: int,
         api_private_key: str,
+        logbus: Optional[LogBus] = None,
     ) -> None:
         import lighter
 
@@ -54,6 +56,27 @@ class LighterTrader:
         self._min_interval_s = 0.35
         self._retry_limit = 4
         self._retry_base_s = 0.8
+        self._logbus = logbus
+
+    def _log(self, text: str) -> None:
+        if self._logbus is None:
+            return
+        self._logbus.publish(text)
+
+    def _log_latency(
+        self,
+        name: str,
+        ms: int,
+        attempt: int,
+        rate_limited: bool,
+        err: Optional[object] = None,
+    ) -> None:
+        if err is None:
+            self._log(f"lighter.latency name={name} ms={ms} attempt={attempt} rate_limited={rate_limited}")
+            return
+        self._log(
+            f"lighter.latency name={name} ms={ms} attempt={attempt} rate_limited={rate_limited} err_type={type(err).__name__} err={err}"
+        )
 
     def _rate_limit_delay(self, attempt: int) -> float:
         return min(self._retry_base_s * (2**attempt), 8.0)
@@ -87,10 +110,17 @@ class LighterTrader:
     async def _call_with_retry(self, func, *args, **kwargs):
         for attempt in range(self._retry_limit):
             try:
+                started = time.monotonic()
                 await self._throttle()
-                return await func(*args, **kwargs)
+                result = await func(*args, **kwargs)
+                elapsed_ms = int((time.monotonic() - started) * 1000)
+                self._log_latency(getattr(func, "__name__", "call"), elapsed_ms, attempt + 1, False)
+                return result
             except Exception as exc:
-                if not self._is_rate_limited(exc) or attempt >= self._retry_limit - 1:
+                elapsed_ms = int((time.monotonic() - started) * 1000)
+                rate_limited = self._is_rate_limited(exc)
+                self._log_latency(getattr(func, "__name__", "call"), elapsed_ms, attempt + 1, rate_limited, exc)
+                if not rate_limited or attempt >= self._retry_limit - 1:
                     raise
                 await asyncio.sleep(self._rate_limit_delay(attempt))
 
@@ -234,6 +264,7 @@ class LighterTrader:
         for attempt in range(self._retry_limit):
             await self._throttle()
             async with self._nonce_lock:
+                started = time.monotonic()
                 _, resp, err = await self._signer.create_order(
                     market_index=int(market_id),
                     client_order_index=int(client_order_index),
@@ -244,6 +275,9 @@ class LighterTrader:
                     time_in_force=tif,
                     reduce_only=bool(reduce_only),
                 )
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            rate_limited = self._resp_rate_limited(err, resp)
+            self._log_latency("create_limit_order", elapsed_ms, attempt + 1, rate_limited, err if err else None)
             if err is None and getattr(resp, "code", 0) in (0, 200):
                 return
             if self._resp_rate_limited(err, resp) and attempt < self._retry_limit - 1:
@@ -276,6 +310,7 @@ class LighterTrader:
         for attempt in range(self._retry_limit):
             await self._throttle()
             async with self._nonce_lock:
+                started = time.monotonic()
                 _, resp, err = await self._signer.create_market_order(
                     market_index=int(market_id),
                     client_order_index=0,
@@ -284,6 +319,9 @@ class LighterTrader:
                     is_ask=bool(is_ask),
                     reduce_only=bool(reduce_only),
                 )
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            rate_limited = self._resp_rate_limited(err, resp)
+            self._log_latency("create_market_order", elapsed_ms, attempt + 1, rate_limited, err if err else None)
             if err is None and getattr(resp, "code", 0) in (0, 200):
                 return
             if self._resp_rate_limited(err, resp) and attempt < self._retry_limit - 1:
@@ -297,10 +335,14 @@ class LighterTrader:
         for attempt in range(self._retry_limit):
             await self._throttle()
             async with self._nonce_lock:
+                started = time.monotonic()
                 _, resp, err = await self._signer.cancel_order(
                     market_index=int(market_id),
                     order_index=int(order_index),
                 )
+            elapsed_ms = int((time.monotonic() - started) * 1000)
+            rate_limited = self._resp_rate_limited(err, resp)
+            self._log_latency("cancel_order", elapsed_ms, attempt + 1, rate_limited, err if err else None)
             if err is None and getattr(resp, "code", 0) in (0, 200):
                 return
             if self._resp_rate_limited(err, resp) and attempt < self._retry_limit - 1:

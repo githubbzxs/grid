@@ -1452,7 +1452,13 @@ async def _ensure_lighter_trader(request: Request) -> LighterTrader:
     if existing:
         await existing.close()
 
-    trader = LighterTrader(env=env, account_index=int(account_index), api_key_index=int(api_key_index), api_private_key=api_private_key)
+    trader = LighterTrader(
+        env=env,
+        account_index=int(account_index),
+        api_key_index=int(api_key_index),
+        api_private_key=api_private_key,
+        logbus=request.app.state.logbus,
+    )
     err = trader.check_client()
     if err is not None:
         await trader.close()
