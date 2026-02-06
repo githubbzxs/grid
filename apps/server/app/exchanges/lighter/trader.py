@@ -53,7 +53,8 @@ class LighterTrader:
         self._positions_ttl_s = 2.0
         self._rate_lock = asyncio.Lock()
         self._last_request_ts = 0.0
-        self._min_interval_s = 0.35
+        self._min_interval_s = 0.20
+        self._min_trade_interval_s = 0.12
         self._retry_limit = 4
         self._retry_base_s = 0.8
         self._logbus = logbus
@@ -99,10 +100,11 @@ class LighterTrader:
             return True
         return False
 
-    async def _throttle(self) -> None:
+    async def _throttle(self, min_interval_s: Optional[float] = None) -> None:
+        interval_s = self._min_interval_s if min_interval_s is None else max(0.0, float(min_interval_s))
         async with self._rate_lock:
             now = time.monotonic()
-            wait = self._min_interval_s - (now - self._last_request_ts)
+            wait = interval_s - (now - self._last_request_ts)
             if wait > 0:
                 await asyncio.sleep(wait)
             self._last_request_ts = time.monotonic()
@@ -262,7 +264,7 @@ class LighterTrader:
     ) -> None:
         tif = self._signer.ORDER_TIME_IN_FORCE_POST_ONLY if post_only else self._signer.ORDER_TIME_IN_FORCE_GOOD_TILL_TIME
         for attempt in range(self._retry_limit):
-            await self._throttle()
+            await self._throttle(self._min_trade_interval_s)
             async with self._nonce_lock:
                 started = time.monotonic()
                 _, resp, err = await self._signer.create_order(
@@ -308,7 +310,7 @@ class LighterTrader:
         price_q = Decimal(str(avg_price)).quantize(q, rounding=ROUND_HALF_UP)
         price_int = int(price_q * (Decimal(10) ** int(meta.price_decimals)))
         for attempt in range(self._retry_limit):
-            await self._throttle()
+            await self._throttle(self._min_trade_interval_s)
             async with self._nonce_lock:
                 started = time.monotonic()
                 _, resp, err = await self._signer.create_market_order(
@@ -333,7 +335,7 @@ class LighterTrader:
 
     async def cancel_order(self, market_id: int, order_index: int) -> None:
         for attempt in range(self._retry_limit):
-            await self._throttle()
+            await self._throttle(self._min_trade_interval_s)
             async with self._nonce_lock:
                 started = time.monotonic()
                 _, resp, err = await self._signer.cancel_order(
