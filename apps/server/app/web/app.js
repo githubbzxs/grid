@@ -199,6 +199,14 @@ function strategyDefaults(mode = "dynamic") {
     max_position_notional: 20,
     reduce_position_notional: 0,
     reduce_order_size_multiplier: 1,
+    market_filter_enabled: false,
+    market_filter_atr_period: 14,
+    market_filter_adx_period: 14,
+    market_filter_atr_pct_min: 0.002,
+    market_filter_atr_pct_max: 0.02,
+    market_filter_adx_max: 28,
+    market_filter_recover_pass_count: 3,
+    market_filter_block_timeout_minutes: 30,
   };
 }
 
@@ -221,6 +229,14 @@ function normalizeStrategies(raw) {
         delete merged.max_position_notional;
         delete merged.reduce_position_notional;
         delete merged.reduce_order_size_multiplier;
+        delete merged.market_filter_enabled;
+        delete merged.market_filter_atr_period;
+        delete merged.market_filter_adx_period;
+        delete merged.market_filter_atr_pct_min;
+        delete merged.market_filter_atr_pct_max;
+        delete merged.market_filter_adx_max;
+        delete merged.market_filter_recover_pass_count;
+        delete merged.market_filter_block_timeout_minutes;
       }
       list.push(merged);
       seen.add(symbol);
@@ -241,6 +257,14 @@ function normalizeStrategies(raw) {
         delete merged.max_position_notional;
         delete merged.reduce_position_notional;
         delete merged.reduce_order_size_multiplier;
+        delete merged.market_filter_enabled;
+        delete merged.market_filter_atr_period;
+        delete merged.market_filter_adx_period;
+        delete merged.market_filter_atr_pct_min;
+        delete merged.market_filter_atr_pct_max;
+        delete merged.market_filter_adx_max;
+        delete merged.market_filter_recover_pass_count;
+        delete merged.market_filter_block_timeout_minutes;
       }
       list.push(merged);
       seen.add(symbol);
@@ -265,6 +289,14 @@ function dynamicStrategyRowTemplate(strategy) {
   const maxpos = escapeHtml(valueText(strategy.max_position_notional));
   const exitpos = escapeHtml(valueText(strategy.reduce_position_notional));
   const reduce = escapeHtml(valueText(strategy.reduce_order_size_multiplier));
+  const mfEnabled = strategy.market_filter_enabled ? "checked" : "";
+  const mfAtrPeriod = escapeHtml(valueText(strategy.market_filter_atr_period));
+  const mfAdxPeriod = escapeHtml(valueText(strategy.market_filter_adx_period));
+  const mfAtrPctMin = escapeHtml(valueText(strategy.market_filter_atr_pct_min));
+  const mfAtrPctMax = escapeHtml(valueText(strategy.market_filter_atr_pct_max));
+  const mfAdxMax = escapeHtml(valueText(strategy.market_filter_adx_max));
+  const mfRecoverPassCount = escapeHtml(valueText(strategy.market_filter_recover_pass_count));
+  const mfBlockTimeoutMinutes = escapeHtml(valueText(strategy.market_filter_block_timeout_minutes));
   const mode = strategy.order_size_mode === "base" ? "base" : "notional";
   return `<tr>
     <td data-label="标的"><input class="st-symbol mono" placeholder="例如 BTC" value="${symbol}" /></td>
@@ -290,6 +322,14 @@ function dynamicStrategyRowTemplate(strategy) {
     <td data-label="触发仓位"><input class="st-maxpos" placeholder="例如 100" value="${maxpos}" /></td>
     <td data-label="退出仓位"><input class="st-exitpos" placeholder="例如 80" value="${exitpos}" /></td>
     <td data-label="减仓倍数"><input class="st-reduce" placeholder="例如 2" value="${reduce}" /></td>
+    <td data-label="过滤开关"><input class="st-mf-enabled" type="checkbox" ${mfEnabled} /></td>
+    <td data-label="ATR周期"><input class="st-mf-atr-period" placeholder="默认 14" value="${mfAtrPeriod}" /></td>
+    <td data-label="ADX周期"><input class="st-mf-adx-period" placeholder="默认 14" value="${mfAdxPeriod}" /></td>
+    <td data-label="ATR%下限"><input class="st-mf-atr-pct-min" placeholder="例如 0.002(0.2%)" value="${mfAtrPctMin}" /></td>
+    <td data-label="ATR%上限"><input class="st-mf-atr-pct-max" placeholder="例如 0.02(2%)" value="${mfAtrPctMax}" /></td>
+    <td data-label="ADX上限"><input class="st-mf-adx-max" placeholder="例如 40" value="${mfAdxMax}" /></td>
+    <td data-label="恢复连通次数"><input class="st-mf-recover-pass-count" placeholder="例如 3" value="${mfRecoverPassCount}" /></td>
+    <td data-label="坏行情超时(分钟)"><input class="st-mf-block-timeout-minutes" placeholder="例如 30" value="${mfBlockTimeoutMinutes}" /></td>
     <td data-label="操作"><button class="danger btn-remove-row" type="button">删除</button></td>
   </tr>`;
 }
@@ -452,6 +492,14 @@ function collectStrategiesFromTable() {
       reduce_position_notional: numOrZero(row.querySelector(".st-exitpos")?.value),
       reduce_order_size_multiplier: numOrZero(row.querySelector(".st-reduce")?.value),
       grid_step: numOrZero(row.querySelector(".st-step")?.value),
+      market_filter_enabled: Boolean(row.querySelector(".st-mf-enabled")?.checked),
+      market_filter_atr_period: Math.floor(numOrZero(row.querySelector(".st-mf-atr-period")?.value)),
+      market_filter_adx_period: Math.floor(numOrZero(row.querySelector(".st-mf-adx-period")?.value)),
+      market_filter_atr_pct_min: numOrZero(row.querySelector(".st-mf-atr-pct-min")?.value),
+      market_filter_atr_pct_max: numOrZero(row.querySelector(".st-mf-atr-pct-max")?.value),
+      market_filter_adx_max: numOrZero(row.querySelector(".st-mf-adx-max")?.value),
+      market_filter_recover_pass_count: Math.floor(numOrZero(row.querySelector(".st-mf-recover-pass-count")?.value)),
+      market_filter_block_timeout_minutes: numOrZero(row.querySelector(".st-mf-block-timeout-minutes")?.value),
     };
   }
 
@@ -906,6 +954,98 @@ function fmtNumber(value, digits = 4) {
   return n.toFixed(digits);
 }
 
+function firstPresentValue(obj, keys) {
+  if (!obj || typeof obj !== "object") return null;
+  for (const key of keys) {
+    const value = obj[key];
+    if (value === undefined || value === null) continue;
+    if (typeof value === "string" && !value.trim()) continue;
+    return value;
+  }
+  return null;
+}
+
+function fmtMaybeNumber(value, digits = 4) {
+  if (value === null || value === undefined || value === "") return "-";
+  const n = Number(value);
+  if (Number.isFinite(n)) return n.toFixed(digits);
+  return String(value);
+}
+
+function fmtMaybeInt(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  const n = Number(value);
+  if (Number.isFinite(n)) return String(Math.floor(n));
+  return String(value);
+}
+
+function normalizeFilterStatus(statusValue, enabledValue) {
+  if (typeof statusValue === "boolean") {
+    return statusValue ? "过滤中" : "放行";
+  }
+  if (typeof statusValue === "number") {
+    return statusValue > 0 ? "过滤中" : "放行";
+  }
+  if (typeof statusValue === "string") {
+    const text = statusValue.trim();
+    if (!text) return "-";
+    const lower = text.toLowerCase();
+    if (lower === "off") return enabledValue === false ? "关闭" : "放行";
+    if (["warmup", "warming", "recovering"].includes(lower)) return "预热中";
+    if (["filtered", "blocked", "block", "bad", "on", "true", "1"].includes(lower)) return "过滤中";
+    if (["pass", "ok", "normal", "false", "0"].includes(lower)) return "放行";
+    return text;
+  }
+  if (enabledValue === false) return "关闭";
+  if (enabledValue === true) return "放行";
+  return "-";
+}
+
+function extractMarketFilter(data) {
+  const statusValue = firstPresentValue(data, [
+    "market_filter_status",
+    "market_filter_state",
+    "filter_status",
+    "filter_state",
+    "market_filter_blocked",
+    "filter_blocked",
+    "bad_market_blocked",
+    "blocked",
+    "is_filtered",
+  ]);
+  const enabledValue = firstPresentValue(data, ["market_filter_enabled", "filter_enabled"]);
+  const reasonValue = firstPresentValue(data, [
+    "market_filter_reason",
+    "filter_reason",
+    "bad_market_reason",
+    "blocked_reason",
+  ]);
+  const atrPctValue = firstPresentValue(data, [
+    "market_filter_atr_pct",
+    "market_filter_atr_percent",
+    "filter_atr_pct",
+    "atr_pct",
+  ]);
+  const adxValue = firstPresentValue(data, ["market_filter_adx", "filter_adx", "adx"]);
+  const badSecondsValue = firstPresentValue(data, [
+    "filter_block_seconds",
+    "market_filter_block_seconds",
+    "market_filter_bad_seconds",
+    "market_filter_blocked_seconds",
+    "filter_bad_seconds",
+    "bad_market_seconds",
+    "bad_seconds",
+  ]);
+
+  return {
+    status: normalizeFilterStatus(statusValue, enabledValue),
+    reason: reasonValue == null ? "-" : String(reasonValue),
+    atrPct: fmtMaybeNumber(atrPctValue, 4),
+    adx: fmtMaybeNumber(adxValue, 2),
+    badSeconds: fmtMaybeInt(badSecondsValue),
+  };
+}
+
 function setProfitStyle(el, value) {
   if (!el) return;
   el.classList.remove("ok", "bad");
@@ -932,9 +1072,15 @@ function renderRuntimeStatus(data) {
   const rows = rowSymbols.map((s) => symbols[s] || { symbol: s });
   els.runtimeTbody.innerHTML = rows
     .map((r) => {
+      const filter = extractMarketFilter(r);
       const reduce = r.reduce_mode ? "是" : "否";
       return `<tr>
         <td class="mono">${escapeHtml(r.symbol || "")}</td>
+        <td class="mono">${escapeHtml(filter.status)}</td>
+        <td class="mono muted">${escapeHtml(filter.reason)}</td>
+        <td class="mono">${escapeHtml(filter.atrPct)}</td>
+        <td class="mono">${escapeHtml(filter.adx)}</td>
+        <td class="mono">${escapeHtml(filter.badSeconds)}</td>
         <td class="mono">${escapeHtml(fmtNumber(r.profit, 4))}</td>
         <td class="mono">${escapeHtml(fmtNumber(r.volume, 4))}</td>
         <td class="mono">${escapeHtml(String(r.trade_count || 0))}</td>
@@ -1001,9 +1147,15 @@ function renderBots(bots) {
   els.botsTbody.innerHTML = rows
     .map((r) => {
       const st = r.running ? "运行中" : "停止";
+      const filter = extractMarketFilter(r);
       return `<tr>
         <td class="mono">${escapeHtml(r.symbol)}</td>
         <td>${escapeHtml(st)}</td>
+        <td class="mono">${escapeHtml(filter.status)}</td>
+        <td class="mono muted">${escapeHtml(filter.reason)}</td>
+        <td class="mono">${escapeHtml(filter.atrPct)}</td>
+        <td class="mono">${escapeHtml(filter.adx)}</td>
+        <td class="mono">${escapeHtml(filter.badSeconds)}</td>
         <td class="mono muted">${escapeHtml(r.mid || "")}</td>
         <td class="mono muted">${escapeHtml(r.center || "")}</td>
         <td class="mono muted">${escapeHtml(`${r.desired || 0}/${r.existing || 0}`)}</td>

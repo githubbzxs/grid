@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import math
@@ -26,6 +26,15 @@ from app.strategies.grid.ids import (
     grid_prefix,
     is_grid_client_order,
 )
+from app.strategies.grid.market_filter import (
+    MarketFilterConfig,
+    MarketFilterDecision,
+    MarketFilterRuntime,
+    OhlcBar,
+    completed_bars,
+    evaluate_market_filter,
+    update_ohlc_bars,
+)
 
 GRID_MODE_DYNAMIC = "dynamic"
 GRID_MODE_AS = "as"
@@ -34,6 +43,15 @@ DEFAULT_AS_K = Decimal("1.5")
 DEFAULT_AS_TAU_SECONDS = Decimal("30")
 DEFAULT_AS_VOL_POINTS = 60
 DEFAULT_AS_STEP_MULT = Decimal("1")
+DEFAULT_FILTER_ATR_PERIOD = 14
+DEFAULT_FILTER_ADX_PERIOD = 14
+DEFAULT_FILTER_ATR_PCT_MIN = Decimal("0.002")
+DEFAULT_FILTER_ATR_PCT_MAX = Decimal("0.02")
+DEFAULT_FILTER_ADX_MAX = Decimal("28")
+DEFAULT_FILTER_RECOVER_PASS_COUNT = 3
+DEFAULT_FILTER_BLOCK_TIMEOUT_MINUTES = Decimal("30")
+FILTER_CLOSE_ONLY_COOLDOWN_MS = 3000
+FILTER_MAX_BARS = 1200
 
 
 def _now_iso() -> str:
@@ -69,6 +87,20 @@ def _safe_int(v: Any, default: int) -> int:
         return int(float(v))
     except Exception:
         return default
+
+
+def _safe_bool(v: Any, default: bool = False) -> bool:
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        text = v.strip().lower()
+        if text in {"1", "true", "yes", "y", "on"}:
+            return True
+        if text in {"0", "false", "no", "n", "off", ""}:
+            return False
+    return default
 
 
 def _exchange_name(value: Any) -> str:
@@ -202,7 +234,7 @@ def _normalize_grid_mode(value: Any) -> str:
         "as",
         "as_grid",
         "as-grid",
-        "as网格",
+        "as缃戞牸",
         "avellaneda",
         "avellaneda_stoikov",
         "avellaneda-stoikov",
@@ -340,6 +372,12 @@ class BotStatus:
     reduce_mode: bool = False
     stop_signal: bool = False
     stop_reason: str = ""
+    filter_state: str = "off"
+    filter_reason: str = "disabled"
+    filter_atr_pct: Optional[str] = None
+    filter_adx: Optional[str] = None
+    filter_block_seconds: int = 0
+    filter_pass_streak: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -357,6 +395,12 @@ class BotStatus:
             "reduce_mode": self.reduce_mode,
             "stop_signal": self.stop_signal,
             "stop_reason": self.stop_reason,
+            "filter_state": self.filter_state,
+            "filter_reason": self.filter_reason,
+            "filter_atr_pct": self.filter_atr_pct,
+            "filter_adx": self.filter_adx,
+            "filter_block_seconds": self.filter_block_seconds,
+            "filter_pass_streak": self.filter_pass_streak,
         }
 
 
@@ -428,6 +472,9 @@ class BotManager:
         self._delay_price_marks: Dict[str, set[str]] = {}
         self._create_block_notice: Dict[str, tuple[int, str]] = {}
         self._cid_level_cursor: Dict[str, Dict[str, int]] = {}
+        self._filter_bars: Dict[str, list[OhlcBar]] = {}
+        self._filter_runtime: Dict[str, MarketFilterRuntime] = {}
+        self._filter_close_only_at: Dict[str, int] = {}
         self._markets_cache: Dict[tuple[str, str], tuple[float, list[Dict[str, Any]]]] = {}
         self._market_resolve_next: Dict[tuple[str, str], float] = {}
         self._markets_cache_ttl_s = 60.0
@@ -450,6 +497,9 @@ class BotManager:
                 self._delay_counts.pop(symbol, None)
                 self._delay_price_marks.pop(symbol, None)
                 self._create_block_notice.pop(symbol, None)
+                self._filter_bars.pop(symbol, None)
+                self._filter_runtime.pop(symbol, None)
+                self._filter_close_only_at.pop(symbol, None)
                 self._history_recorded.discard(symbol)
                 self._start_ms[symbol] = _now_ms()
             elif symbol not in self._start_ms:
@@ -596,6 +646,9 @@ class BotManager:
             self._history_recorded.discard(symbol)
             self._start_ms.pop(symbol, None)
             self._trade_pnl_reset(symbol)
+            self._filter_bars.pop(symbol, None)
+            self._filter_runtime.pop(symbol, None)
+            self._filter_close_only_at.pop(symbol, None)
             restart_task = self._restart_tasks.pop(symbol, None)
             if restart_task and not restart_task.done():
                 restart_task.cancel()
@@ -773,6 +826,180 @@ class BotManager:
     def _sim_update_mid(self, symbol: str, mid: Decimal) -> None:
         self._sim_state(symbol).last_mid = mid
 
+    def _filter_off_patch(self, reason: str = "disabled") -> Dict[str, Any]:
+        return {
+            "filter_state": "off",
+            "filter_reason": reason,
+            "filter_atr_pct": None,
+            "filter_adx": None,
+            "filter_block_seconds": 0,
+            "filter_pass_streak": 0,
+        }
+
+    def _filter_status_patch(self, decision: MarketFilterDecision) -> Dict[str, Any]:
+        atr_pct_text = _fmt_decimal(decision.atr_pct, 6) if decision.atr_pct is not None else None
+        adx_text = _fmt_decimal(decision.adx, 4) if decision.adx is not None else None
+        return {
+            "filter_state": decision.state,
+            "filter_reason": decision.reason,
+            "filter_atr_pct": atr_pct_text,
+            "filter_adx": adx_text,
+            "filter_block_seconds": int(decision.block_seconds),
+            "filter_pass_streak": int(decision.pass_streak),
+        }
+
+    def _market_filter_runtime_state(self, symbol: str) -> MarketFilterRuntime:
+        sym = symbol.upper()
+        runtime = self._filter_runtime.get(sym)
+        if runtime is None:
+            runtime = MarketFilterRuntime()
+            self._filter_runtime[sym] = runtime
+        return runtime
+
+    def _market_filter_config(self, strat: Dict[str, Any], grid_mode: str) -> MarketFilterConfig:
+        enabled = grid_mode == GRID_MODE_DYNAMIC and _safe_bool(strat.get("market_filter_enabled"), False)
+
+        atr_period_raw = strat.get("market_filter_atr_period")
+        atr_period_default = DEFAULT_FILTER_ATR_PERIOD if atr_period_raw in (None, "") else 0
+        atr_period = _safe_int(atr_period_raw, atr_period_default)
+        if atr_period <= 0:
+            atr_period = DEFAULT_FILTER_ATR_PERIOD
+        atr_period = max(2, min(atr_period, 200))
+
+        adx_period_raw = strat.get("market_filter_adx_period")
+        adx_period_default = DEFAULT_FILTER_ADX_PERIOD if adx_period_raw in (None, "") else 0
+        adx_period = _safe_int(adx_period_raw, adx_period_default)
+        if adx_period <= 0:
+            adx_period = DEFAULT_FILTER_ADX_PERIOD
+        adx_period = max(2, min(adx_period, 200))
+
+        atr_pct_min_raw = strat.get("market_filter_atr_pct_min")
+        if atr_pct_min_raw is None or str(atr_pct_min_raw).strip() == "":
+            atr_pct_min = DEFAULT_FILTER_ATR_PCT_MIN
+        else:
+            atr_pct_min = _safe_decimal(atr_pct_min_raw)
+            if atr_pct_min < 0:
+                atr_pct_min = Decimal(0)
+
+        atr_pct_max_raw = strat.get("market_filter_atr_pct_max")
+        if atr_pct_max_raw is None or str(atr_pct_max_raw).strip() == "":
+            atr_pct_max = DEFAULT_FILTER_ATR_PCT_MAX
+        else:
+            atr_pct_max = _safe_decimal(atr_pct_max_raw)
+            if atr_pct_max <= 0:
+                atr_pct_max = DEFAULT_FILTER_ATR_PCT_MAX
+        if atr_pct_max < atr_pct_min:
+            atr_pct_max = atr_pct_min
+
+        adx_max_raw = strat.get("market_filter_adx_max")
+        if adx_max_raw is None or str(adx_max_raw).strip() == "":
+            adx_max = DEFAULT_FILTER_ADX_MAX
+        else:
+            adx_max = _safe_decimal(adx_max_raw)
+            if adx_max <= 0:
+                adx_max = DEFAULT_FILTER_ADX_MAX
+
+        recover_raw = strat.get("market_filter_recover_pass_count")
+        recover_pass_count = _safe_int(
+            recover_raw,
+            DEFAULT_FILTER_RECOVER_PASS_COUNT if recover_raw in (None, "") else 0,
+        )
+        if recover_pass_count <= 0:
+            recover_pass_count = DEFAULT_FILTER_RECOVER_PASS_COUNT
+        recover_pass_count = max(1, min(recover_pass_count, 50))
+
+        timeout_raw = strat.get("market_filter_block_timeout_minutes")
+        if timeout_raw is None or str(timeout_raw).strip() == "":
+            timeout_minutes = DEFAULT_FILTER_BLOCK_TIMEOUT_MINUTES
+        else:
+            timeout_minutes = _safe_decimal(timeout_raw)
+            if timeout_minutes < 0:
+                timeout_minutes = Decimal(0)
+
+        return MarketFilterConfig(
+            enabled=enabled,
+            atr_period=atr_period,
+            adx_period=adx_period,
+            atr_pct_min=atr_pct_min,
+            atr_pct_max=atr_pct_max,
+            adx_max=adx_max,
+            recover_pass_count=recover_pass_count,
+            block_timeout_minutes=timeout_minutes,
+        )
+
+    def _evaluate_filter(
+        self,
+        symbol: str,
+        strat: Dict[str, Any],
+        grid_mode: str,
+        now_ms: int,
+        mid: Decimal,
+    ) -> MarketFilterDecision:
+        sym = symbol.upper()
+        cfg = self._market_filter_config(strat, grid_mode)
+        runtime = self._market_filter_runtime_state(sym)
+        prev_state = runtime.state
+        prev_reason = runtime.reason
+
+        if not cfg.enabled:
+            self._filter_bars.pop(sym, None)
+            self._filter_close_only_at.pop(sym, None)
+            decision = evaluate_market_filter(cfg, runtime, [], now_ms)
+            return decision
+
+        bars = self._filter_bars.get(sym)
+        if bars is None:
+            bars = []
+            self._filter_bars[sym] = bars
+        update_ohlc_bars(bars, now_ms, mid, FILTER_MAX_BARS)
+        ready_bars = completed_bars(bars, now_ms)
+        decision = evaluate_market_filter(cfg, runtime, ready_bars, now_ms)
+
+        if decision.state != prev_state or decision.reason != prev_reason:
+            self._logbus.publish(
+                "filter.eval "
+                f"symbol={sym} state={decision.state} reason={decision.reason} "
+                f"atr_pct={decision.atr_pct} adx={decision.adx} "
+                f"pass_streak={decision.pass_streak} block_s={decision.block_seconds}"
+            )
+
+        if prev_state != "block" and decision.state == "block":
+            self._logbus.publish(
+                f"filter.block symbol={sym} reason={decision.reason} atr_pct={decision.atr_pct} adx={decision.adx}"
+            )
+        if prev_state in {"block", "warmup"} and decision.state == "pass":
+            self._logbus.publish(f"filter.recover symbol={sym} atr_pct={decision.atr_pct} adx={decision.adx}")
+
+        return decision
+
+    async def _filter_close_only_flatten(
+        self,
+        symbol: str,
+        trader: Trader,
+        market_id: str | int,
+        pos_base: Optional[Decimal],
+        meta: MarketMeta,
+        mid: Decimal,
+        simulate: bool,
+        now_ms: int,
+    ) -> None:
+        if pos_base is None:
+            return
+        clear_step = Decimal(1) / (Decimal(10) ** int(meta.size_decimals))
+        clear_threshold = max(meta.min_base_amount, clear_step)
+        if abs(pos_base) <= clear_threshold:
+            return
+        last_ts = self._filter_close_only_at.get(symbol, 0)
+        if (now_ms - last_ts) < FILTER_CLOSE_ONLY_COOLDOWN_MS:
+            return
+        self._filter_close_only_at[symbol] = now_ms
+        if simulate:
+            self._sim_market_close(symbol, mid)
+            self._logbus.publish(f"filter.close_only.sim symbol={symbol}")
+            return
+        await self._market_close_position(symbol, trader, market_id, pos_base, meta)
+        self._logbus.publish(f"filter.close_only symbol={symbol}")
+
     def _pick_level_with_cursor(self, symbol: str, side: str, free_levels: list[int]) -> Optional[int]:
         if not free_levels:
             return None
@@ -861,7 +1088,7 @@ class BotManager:
             step = _quantize(tick, meta.price_decimals, ROUND_HALF_UP)
             return center, step
 
-        # AS 模型：r = S - q * γ * σ^2 * τ，δ* = γ * σ^2 * τ + (2/γ) ln(1 + γ/k)
+        # AS 妯″瀷锛歳 = S - q * 纬 * 蟽^2 * 蟿锛屛? = 纬 * 蟽^2 * 蟿 + (2/纬) ln(1 + 纬/k)
         spread = gamma_f * (sigma_f ** 2) * tau_f + (2.0 / gamma_f) * math.log(1.0 + (gamma_f / k_f))
         step_mult_f = float(step_mult) if float(step_mult) > 0 else 1.0
         step = Decimal(str(max((spread / 2.0) * step_mult_f, float(tick))))
@@ -1041,7 +1268,13 @@ class BotManager:
                 grid_mode = _normalize_grid_mode(strat.get("grid_mode"))
 
                 if not bool(strat.get("enabled", True)):
-                    await self._update_status(symbol, running=True, message="已禁用", last_tick_at=_now_iso())
+                    await self._update_status(
+                        symbol,
+                        running=True,
+                        message="策略已禁用",
+                        last_tick_at=_now_iso(),
+                        **self._filter_off_patch("strategy_disabled"),
+                    )
                     continue
 
                 exchange_name = _exchange_name(strat.get("exchange") or (cfg.get("exchange", {}) or {}).get("name"))
@@ -1051,7 +1284,13 @@ class BotManager:
                 if market_id is None:
                     market_id = await self._resolve_market_id(symbol, trader, cfg, strat)
                 if market_id is None:
-                    await self._update_status(symbol, running=True, message="未配置 market_id", last_tick_at=_now_iso())
+                    await self._update_status(
+                        symbol,
+                        running=True,
+                        message="未配置 market_id",
+                        last_tick_at=_now_iso(),
+                        **self._filter_off_patch("missing_market_id"),
+                    )
                     continue
 
                 if symbol not in self._base_pnl:
@@ -1067,7 +1306,14 @@ class BotManager:
                 meta = await trader.market_meta(market_id)
                 bid, ask = await trader.best_bid_ask(market_id)
                 if bid is None or ask is None:
-                    await self._update_status(symbol, running=True, message="无法获取盘口", last_tick_at=_now_iso(), market_id=market_id)
+                    await self._update_status(
+                        symbol,
+                        running=True,
+                        message="无法获取盘口",
+                        last_tick_at=_now_iso(),
+                        market_id=market_id,
+                        **self._filter_off_patch("book_unavailable"),
+                    )
                     continue
 
                 mid = (bid + ask) / 2
@@ -1083,6 +1329,9 @@ class BotManager:
                     start_ms = _parse_iso_ms(status.started_at if status else None) or now_ms
                     self._start_ms[symbol] = start_ms
 
+                filter_decision = self._evaluate_filter(symbol, strat, grid_mode, now_ms, mid)
+                filter_patch = self._filter_status_patch(filter_decision)
+
                 step_input = _safe_decimal(strat.get("grid_step") or 0)
                 if grid_mode == GRID_MODE_AS:
                     min_step = _min_price_step(meta)
@@ -1094,12 +1343,23 @@ class BotManager:
                             message="grid_step 必须大于 0",
                             last_tick_at=_now_iso(),
                             market_id=market_id,
+                            **self._filter_off_patch("invalid_grid_step"),
                         )
                         continue
                     min_step = step_input
 
                 stop_signal = bool(self._stop_signal.get(symbol, False))
                 stop_reason = self._stop_reason.get(symbol, "")
+                filter_close_only = grid_mode == GRID_MODE_DYNAMIC and bool(filter_decision.close_only)
+
+                if grid_mode == GRID_MODE_DYNAMIC and filter_decision.timeout_stop and not stop_signal:
+                    stop_signal = True
+                    stop_reason = "market_filter_timeout"
+                    self._stop_signal[symbol] = True
+                    self._stop_reason[symbol] = stop_reason
+                    self._logbus.publish(
+                        f"filter.timeout.stop symbol={symbol} block_s={filter_decision.block_seconds}"
+                    )
 
                 if grid_mode == GRID_MODE_AS:
                     max_drawdown = _safe_decimal(strat.get("as_max_drawdown") or 0)
@@ -1119,7 +1379,7 @@ class BotManager:
                         drawdown = peak - profit_now
                         if drawdown >= max_drawdown:
                             self._stop_signal[symbol] = True
-                            self._stop_reason[symbol] = "最大回撤触发"
+                            self._stop_reason[symbol] = "as_drawdown"
                             await self._cancel_grid_orders(symbol, trader, market_id, simulate=simulate)
                             await self._record_history(
                                 trader,
@@ -1139,6 +1399,7 @@ class BotManager:
                                 reduce_mode=False,
                                 stop_signal=True,
                                 stop_reason="as_drawdown",
+                                **filter_patch,
                             )
                             self._logbus.publish(
                                 f"as.drawdown.stop symbol={symbol} drawdown={_fmt_decimal(drawdown)} limit={_fmt_decimal(max_drawdown)}"
@@ -1162,7 +1423,14 @@ class BotManager:
                     reduce_mult = Decimal(1)
                     self._reduce_mode[symbol] = False
 
-                need_position = max_pos > 0 or stop_signal or stop_after_minutes > 0 or stop_after_volume > 0 or grid_mode == GRID_MODE_AS
+                need_position = (
+                    max_pos > 0
+                    or stop_signal
+                    or stop_after_minutes > 0
+                    or stop_after_volume > 0
+                    or grid_mode == GRID_MODE_AS
+                    or filter_close_only
+                )
                 if need_position:
                     if simulate:
                         pos_base = self.sim_position_base(symbol)
@@ -1192,6 +1460,18 @@ class BotManager:
                         elif pos_base < 0:
                             reduce_side = "bid"
 
+                if filter_close_only:
+                    await self._filter_close_only_flatten(
+                        symbol=symbol,
+                        trader=trader,
+                        market_id=market_id,
+                        pos_base=pos_base,
+                        meta=meta,
+                        mid=mid,
+                        simulate=simulate,
+                        now_ms=now_ms,
+                    )
+
                 if grid_mode == GRID_MODE_AS:
                     pos_for_as = pos_base if pos_base is not None else Decimal(0)
                     center, step = self._calc_as_center_step(
@@ -1215,7 +1495,7 @@ class BotManager:
                         if stop_after_minutes > 0:
                             limit_ms = int(stop_after_minutes * Decimal(60_000))
                             if (now_ms - start_ms) >= limit_ms:
-                                reason_parts.append("运行时间达到")
+                                reason_parts.append("运行时长达到")
                         if stop_after_volume > 0:
                             try:
                                 if simulate:
@@ -1230,7 +1510,7 @@ class BotManager:
                                 )
                         if reason_parts:
                             stop_signal = True
-                            stop_reason = "且".join(reason_parts)
+                            stop_reason = " / ".join(reason_parts)
                             self._stop_signal[symbol] = True
                             self._stop_reason[symbol] = stop_reason
                             self._logbus.publish(f"bot.stop_signal symbol={symbol} reason={stop_reason}")
@@ -1253,6 +1533,7 @@ class BotManager:
                             reduce_mode=reduce_mode,
                             stop_signal=True,
                             stop_reason=stop_reason,
+                            **filter_patch,
                         )
                         self._logbus.publish(f'bot.stop.final symbol={symbol} reason=position_unknown')
                         return
@@ -1275,6 +1556,7 @@ class BotManager:
                             reduce_mode=reduce_mode,
                             stop_signal=True,
                             stop_reason=stop_reason,
+                            **filter_patch,
                         )
                         self._logbus.publish(f'bot.stop.final symbol={symbol} reason=position_clear')
                         return
@@ -1294,11 +1576,12 @@ class BotManager:
                         mid=str(mid),
                         center=str(center),
                         desired=0,
-                        existing=0,
-                        reduce_mode=reduce_mode,
-                        stop_signal=True,
-                        stop_reason=stop_reason,
-                    )
+                            existing=0,
+                            reduce_mode=reduce_mode,
+                            stop_signal=True,
+                            stop_reason=stop_reason,
+                            **filter_patch,
+                        )
                     self._logbus.publish(f'bot.stop.final symbol={symbol} reason=market_close')
                     return
 
@@ -1344,6 +1627,9 @@ class BotManager:
                 else:
                     levels_up = max(0, min(levels_up, MAX_LEVEL_PER_SIDE))
                     levels_down = max(0, min(levels_down, MAX_LEVEL_PER_SIDE))
+                if filter_close_only:
+                    levels_up = 0
+                    levels_down = 0
 
                 size_mode = str(strat.get("order_size_mode") or "notional")
                 size_value = _safe_decimal(strat.get("order_size_value") or 0)
@@ -1653,6 +1939,8 @@ class BotManager:
                     if stop_reason:
                         stop_tip = f"停止信号:{stop_reason}"
                     msg = f"{msg} | {stop_tip}"
+                if filter_close_only:
+                    msg = f"{msg} | filter:{filter_decision.state}"
                 if create_block_tip:
                     msg = f"{msg} | blocked:{create_block_tip}"
                 await self._update_status(
@@ -1669,12 +1957,19 @@ class BotManager:
                     reduce_mode=reduce_mode,
                     stop_signal=stop_signal,
                     stop_reason=stop_reason,
+                    **filter_patch,
                 )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             self._logbus.publish(f"bot.error symbol={symbol} err={type(exc).__name__}:{exc}")
-            await self._update_status(symbol, running=False, message="异常退出", last_tick_at=_now_iso())
+            await self._update_status(
+                symbol,
+                running=False,
+                message="异常退出",
+                last_tick_at=_now_iso(),
+                **self._filter_off_patch("bot_error"),
+            )
             await self._schedule_restart(symbol, trader)
 
     async def _trade_stats_since(
@@ -2206,7 +2501,13 @@ class BotManager:
 
         if limit_reached:
             self._logbus.publish(f"bot.restart.limit symbol={symbol} count={attempts}")
-            await self._update_status(symbol, running=False, message="自动重连已达上限", last_tick_at=_now_iso())
+            await self._update_status(
+                symbol,
+                running=False,
+                message="自动重连已达上限",
+                last_tick_at=_now_iso(),
+                **self._filter_off_patch("bot_error"),
+            )
 
     async def _restart_after_delay(self, symbol: str, trader: Trader, delay_s: float) -> None:
         try:
@@ -2237,3 +2538,4 @@ class BotManager:
             data = current.to_dict()
             data.update(patch)
             self._status[symbol] = BotStatus(**data)
+

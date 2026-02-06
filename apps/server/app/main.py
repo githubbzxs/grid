@@ -305,6 +305,30 @@ def _fmt_decimal(value: Decimal, digits: int = 4) -> str:
     return str(value.quantize(q, rounding=ROUND_HALF_UP))
 
 
+def _runtime_filter_fields(status: Dict[str, Any]) -> Dict[str, Any]:
+    state = str(status.get("filter_state") or "off")
+    reason = str(status.get("filter_reason") or "")
+
+    atr_value = status.get("filter_atr_pct")
+    atr_text = None
+    if atr_value is not None and str(atr_value).strip():
+        atr_text = _fmt_decimal(_safe_decimal(atr_value), 6)
+
+    adx_value = status.get("filter_adx")
+    adx_text = None
+    if adx_value is not None and str(adx_value).strip():
+        adx_text = _fmt_decimal(_safe_decimal(adx_value), 4)
+
+    return {
+        "filter_state": state,
+        "filter_reason": reason,
+        "filter_atr_pct": atr_text,
+        "filter_adx": adx_text,
+        "filter_block_seconds": int(status.get("filter_block_seconds") or 0),
+        "filter_pass_streak": int(status.get("filter_pass_streak") or 0),
+    }
+
+
 def _order_field(order: Any, name: str) -> Any:
     if isinstance(order, dict):
         return order.get(name)
@@ -1105,6 +1129,7 @@ async def runtime_status(
                 "open_orders": open_orders,
                 "delay_count": int(status.get("delay_count") or 0),
                 "reduce_mode": reduce_mode,
+                **_runtime_filter_fields(status),
             }
 
             totals_profit += profit
@@ -1250,6 +1275,7 @@ async def runtime_status(
             "open_orders": open_orders,
             "delay_count": int(status.get("delay_count") or 0),
             "reduce_mode": reduce_mode,
+            **_runtime_filter_fields(status),
         }
 
         totals_profit += profit
