@@ -7,6 +7,7 @@ from app.core.logbus import LogBus
 from app.services.bot_manager import (
     BotManager,
     _is_rate_limited_error,
+    _split_cancel_keep_dynamic,
     _split_cancel_keep_by_target,
 )
 
@@ -78,3 +79,47 @@ def test_split_cancel_keep_by_target_empty_target_cancel_all() -> None:
     assert len(cancel_orders) == 2
     assert (o1, Decimal("99")) in cancel_orders
     assert (o2, Decimal("98")) in cancel_orders
+
+
+def test_split_cancel_keep_dynamic_keep_in_range_orders() -> None:
+    o1 = {"id": "o1"}
+    o2 = {"id": "o2"}
+    o3 = {"id": "o3"}
+    o4 = {"id": "o4"}
+    orders = {
+        Decimal("100"): [o1],
+        Decimal("101"): [o2],
+        Decimal("102"): [o3],
+        Decimal("103"): [o4],
+    }
+
+    cancel_orders, keep_prices = _split_cancel_keep_dynamic(
+        orders_by_price=orders,
+        target_prices=[Decimal("100"), Decimal("101"), Decimal("102")],
+        side="ask",
+    )
+
+    assert keep_prices == {Decimal("100"), Decimal("101"), Decimal("102")}
+    assert len(cancel_orders) == 1
+    assert (o4, Decimal("103")) in cancel_orders
+
+
+def test_split_cancel_keep_dynamic_duplicate_target_cancel_extra() -> None:
+    keep = {"id": "keep"}
+    extra = {"id": "extra"}
+    far = {"id": "far"}
+    orders = {
+        Decimal("99"): [keep, extra],
+        Decimal("98"): [far],
+    }
+
+    cancel_orders, keep_prices = _split_cancel_keep_dynamic(
+        orders_by_price=orders,
+        target_prices=[Decimal("99"), Decimal("100")],
+        side="bid",
+    )
+
+    assert keep_prices == {Decimal("99")}
+    assert len(cancel_orders) == 2
+    assert (extra, Decimal("99")) in cancel_orders
+    assert (far, Decimal("98")) in cancel_orders
