@@ -103,6 +103,17 @@ def _safe_bool(v: Any, default: bool = False) -> bool:
     return default
 
 
+def _is_rate_limited_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return (
+        "too many requests" in text
+        or "rate limit" in text
+        or "code=23000" in text
+        or "\"code\": 23000" in text
+        or "(429)" in text
+    )
+
+
 def _exchange_name(value: Any) -> str:
     name = str(value or "").strip().lower()
     if name == "paradex":
@@ -479,6 +490,8 @@ class BotManager:
         self._market_resolve_next: Dict[tuple[str, str], float] = {}
         self._markets_cache_ttl_s = 60.0
         self._market_resolve_cooldown_s = 20.0
+        self._rate_limit_streak: Dict[str, int] = {}
+        self._rate_limit_cooldown_until_ms: Dict[str, int] = {}
 
     async def start(self, symbol: str, trader: Trader, manual: bool = True) -> None:
         symbol = symbol.upper()
@@ -500,6 +513,8 @@ class BotManager:
                 self._filter_bars.pop(symbol, None)
                 self._filter_runtime.pop(symbol, None)
                 self._filter_close_only_at.pop(symbol, None)
+                self._rate_limit_streak.pop(symbol, None)
+                self._rate_limit_cooldown_until_ms.pop(symbol, None)
                 self._history_recorded.discard(symbol)
                 self._start_ms[symbol] = _now_ms()
             elif symbol not in self._start_ms:
@@ -649,6 +664,8 @@ class BotManager:
             self._filter_bars.pop(symbol, None)
             self._filter_runtime.pop(symbol, None)
             self._filter_close_only_at.pop(symbol, None)
+            self._rate_limit_streak.pop(symbol, None)
+            self._rate_limit_cooldown_until_ms.pop(symbol, None)
             restart_task = self._restart_tasks.pop(symbol, None)
             if restart_task and not restart_task.done():
                 restart_task.cancel()
@@ -764,6 +781,23 @@ class BotManager:
 
     def snapshot(self) -> Dict[str, Any]:
         return {k: v.to_dict() for k, v in self._status.items()}
+
+    def _rate_limit_wait_ms(self, symbol: str, now_ms: int) -> int:
+        until = int(self._rate_limit_cooldown_until_ms.get(symbol, 0))
+        if now_ms >= until:
+            return 0
+        return max(0, until - now_ms)
+
+    def _mark_rate_limited(self, symbol: str, now_ms: int) -> tuple[int, int]:
+        streak = int(self._rate_limit_streak.get(symbol, 0)) + 1
+        self._rate_limit_streak[symbol] = streak
+        delay_ms = min(10_000, 500 * (2 ** (streak - 1)))
+        self._rate_limit_cooldown_until_ms[symbol] = now_ms + delay_ms
+        return delay_ms, streak
+
+    def _clear_rate_limited(self, symbol: str) -> None:
+        self._rate_limit_streak.pop(symbol, None)
+        self._rate_limit_cooldown_until_ms.pop(symbol, None)
 
     @staticmethod
     def _sim_enabled(runtime: Dict[str, Any]) -> bool:
@@ -1264,6 +1298,17 @@ class BotManager:
                 stop_after_minutes = _safe_decimal(runtime.get("stop_after_minutes") or 0)
                 stop_after_volume = _safe_decimal(runtime.get("stop_after_volume") or 0)
                 stop_check_interval_ms = _safe_int(runtime.get("stop_check_interval_ms"), 1000)
+                loop_now_ms = _now_ms()
+                wait_ms = self._rate_limit_wait_ms(symbol, loop_now_ms)
+                if wait_ms > 0:
+                    await self._update_status(
+                        symbol,
+                        running=True,
+                        message=f"触发限流，冷却中({wait_ms}ms)",
+                        last_tick_at=_now_iso(),
+                        **self._filter_off_patch("rate_limit_cooldown"),
+                    )
+                    continue
                 strat = (cfg.get("strategies", {}) or {}).get(symbol, {}) or {}
                 grid_mode = _normalize_grid_mode(strat.get("grid_mode"))
 
@@ -1303,8 +1348,26 @@ class BotManager:
                             f"pnl.init.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}"
                         )
 
-                meta = await trader.market_meta(market_id)
-                bid, ask = await trader.best_bid_ask(market_id)
+                try:
+                    meta = await trader.market_meta(market_id)
+                    bid, ask = await trader.best_bid_ask(market_id)
+                    self._clear_rate_limited(symbol)
+                except Exception as exc:
+                    if _is_rate_limited_error(exc):
+                        delay_ms, streak = self._mark_rate_limited(symbol, _now_ms())
+                        self._logbus.publish(
+                            f"bot.rate_limited symbol={symbol} op=book cooldown_ms={delay_ms} streak={streak}"
+                        )
+                        await self._update_status(
+                            symbol,
+                            running=True,
+                            message=f"盘口限流，退避{delay_ms}ms",
+                            last_tick_at=_now_iso(),
+                            market_id=market_id,
+                            **self._filter_off_patch("rate_limited"),
+                        )
+                        continue
+                    raise
                 if bid is None or ask is None:
                     await self._update_status(
                         symbol,
@@ -1589,7 +1652,32 @@ class BotManager:
                 if simulate:
                     existing_orders = self.sim_orders(symbol)
                 else:
-                    existing_orders = await trader.active_orders(market_id)
+                    try:
+                        existing_orders = await trader.active_orders(market_id)
+                        self._clear_rate_limited(symbol)
+                    except Exception as exc:
+                        if _is_rate_limited_error(exc):
+                            delay_ms, streak = self._mark_rate_limited(symbol, _now_ms())
+                            self._logbus.publish(
+                                f"bot.rate_limited symbol={symbol} op=active_orders cooldown_ms={delay_ms} streak={streak}"
+                            )
+                            await self._update_status(
+                                symbol,
+                                running=True,
+                                message=f"查询挂单限流，退避{delay_ms}ms",
+                                last_tick_at=_now_iso(),
+                                market_id=market_id,
+                                mid=str(mid),
+                                center=str(center),
+                                desired=0,
+                                existing=0,
+                                reduce_mode=reduce_mode,
+                                stop_signal=stop_signal,
+                                stop_reason=stop_reason,
+                                **filter_patch,
+                            )
+                            continue
+                        raise
                 existing: Dict[int, Any] = {}
                 asks_by_price: Dict[Decimal, list[Any]] = {}
                 bids_by_price: Dict[Decimal, list[Any]] = {}
