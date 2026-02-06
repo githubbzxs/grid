@@ -5,6 +5,7 @@ import time
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.exchanges.paradex.market_ws import ParadexMarketData
 from app.exchanges.types import MarketMeta
 
 
@@ -52,6 +53,7 @@ class ParadexTrader:
             raise ValueError("缺少 Paradex 凭据")
 
         self._api = self._client.api_client
+        self._market_ws = ParadexMarketData(getattr(self._client, "ws_client", None))
         self._positions_lock = asyncio.Lock()
         self._positions_cached_at = 0.0
         self._positions_cache: Dict[str, Decimal] = {}
@@ -65,6 +67,10 @@ class ParadexTrader:
         return None
 
     async def close(self) -> None:
+        try:
+            await self._market_ws.close()
+        except Exception:
+            pass
         await self._client.close()
 
     async def market_meta(self, market_id: str | int) -> MarketMeta:
@@ -102,6 +108,12 @@ class ParadexTrader:
 
     async def best_bid_ask(self, market_id: str | int) -> Tuple[Optional[Decimal], Optional[Decimal]]:
         market = str(market_id)
+        try:
+            bid_ws, ask_ws = await self._market_ws.best_bid_ask(market)
+            if bid_ws is not None or ask_ws is not None:
+                return bid_ws, ask_ws
+        except Exception:
+            pass
         data = self._api.fetch_bbo(market)
         bid = data.get("bid")
         ask = data.get("ask")

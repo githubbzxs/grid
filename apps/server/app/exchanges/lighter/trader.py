@@ -6,6 +6,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.exchanges.lighter.public_api import base_url
+from app.exchanges.lighter.market_ws import LighterMarketData
 from app.exchanges.types import MarketMeta
 from app.core.logbus import LogBus
 
@@ -43,6 +44,7 @@ class LighterTrader:
         )
         self._order_api = self._signer.order_api
         self._account_api = lighter.AccountApi(self._signer.api_client)
+        self._market_ws = LighterMarketData(env=env)
 
         self._auth_token: Optional[str] = None
         self._auth_expiry_unix: int = 0
@@ -149,6 +151,10 @@ class LighterTrader:
         return self._signer.check_client()
 
     async def close(self) -> None:
+        try:
+            await self._market_ws.close()
+        except Exception:
+            pass
         await self._signer.close()
 
     async def auth_token(self) -> str:
@@ -191,6 +197,13 @@ class LighterTrader:
         raise KeyError(f"未知 market_id: {market_id}")
 
     async def best_bid_ask(self, market_id: int) -> Tuple[Optional[Decimal], Optional[Decimal]]:
+        try:
+            bid, ask = await self._market_ws.best_bid_ask(int(market_id))
+            if bid is not None or ask is not None:
+                return bid, ask
+        except Exception as exc:
+            self._log(f"lighter.ws.book.error market_id={market_id} err={type(exc).__name__}:{exc}")
+
         resp = await self._call_with_retry(self._order_api.order_book_orders, market_id=int(market_id), limit=1)
         bids = getattr(resp, "bids", []) or []
         asks = getattr(resp, "asks", []) or []
