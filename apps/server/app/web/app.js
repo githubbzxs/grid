@@ -1021,12 +1021,24 @@ function extractMarketFilter(data) {
     "blocked_reason",
   ]);
   const atrPctValue = firstPresentValue(data, [
+    "market_bid",
+    "bid",
+    "best_bid",
+    "bid_price",
     "market_filter_atr_pct",
     "market_filter_atr_percent",
     "filter_atr_pct",
     "atr_pct",
   ]);
-  const adxValue = firstPresentValue(data, ["market_filter_adx", "filter_adx", "adx"]);
+  const adxValue = firstPresentValue(data, [
+    "market_ask",
+    "ask",
+    "best_ask",
+    "ask_price",
+    "market_filter_adx",
+    "filter_adx",
+    "adx",
+  ]);
   const badSecondsValue = firstPresentValue(data, [
     "filter_block_seconds",
     "market_filter_block_seconds",
@@ -1037,11 +1049,16 @@ function extractMarketFilter(data) {
     "bad_seconds",
   ]);
 
+  let reasonText = reasonValue == null ? "-" : String(reasonValue);
+  if (reasonText.startsWith("use_prev_data:") || reasonText === "use_prev_indicator") {
+    reasonText = "实时行情直读";
+  }
+
   return {
     status: normalizeFilterStatus(statusValue, enabledValue),
-    reason: reasonValue == null ? "-" : String(reasonValue),
+    reason: reasonText,
     atrPct: fmtMaybeNumber(atrPctValue, 4),
-    adx: fmtMaybeNumber(adxValue, 2),
+    adx: fmtMaybeNumber(adxValue, 4),
     badSeconds: fmtMaybeInt(badSecondsValue),
   };
 }
@@ -1068,7 +1085,7 @@ function renderRuntimeStatus(data) {
   els.rtUpdated.textContent = data.updated_at || "-";
 
   const symbols = data.symbols || {};
-  const rowSymbols = mergeSymbols(getCurrentStrategySymbols(), Object.keys(symbols));
+  const rowSymbols = Object.keys(symbols);
   const rows = rowSymbols.map((s) => symbols[s] || { symbol: s });
   els.runtimeTbody.innerHTML = rows
     .map((r) => {

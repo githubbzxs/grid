@@ -318,16 +318,31 @@ def _fmt_decimal(value: Decimal, digits: int = 4) -> str:
     return str(value.quantize(q, rounding=ROUND_HALF_UP))
 
 
+def _first_non_empty(status: Dict[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        value = status.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return value
+    return None
+
+
 def _runtime_filter_fields(status: Dict[str, Any]) -> Dict[str, Any]:
     state = str(status.get("filter_state") or "off")
     reason = str(status.get("filter_reason") or "")
 
-    atr_value = status.get("filter_atr_pct")
+    atr_value = _first_non_empty(status, ("market_bid", "bid"))
+    if atr_value is None:
+        atr_value = status.get("filter_atr_pct")
     atr_text = None
     if atr_value is not None and str(atr_value).strip():
         atr_text = _fmt_decimal(_safe_decimal(atr_value), 6)
 
-    adx_value = status.get("filter_adx")
+    adx_value = _first_non_empty(status, ("market_ask", "ask"))
+    if adx_value is None:
+        adx_value = status.get("filter_adx")
     adx_text = None
     if adx_value is not None and str(adx_value).strip():
         adx_text = _fmt_decimal(_safe_decimal(adx_value), 4)
@@ -1074,19 +1089,30 @@ async def runtime_status(
 ) -> Dict[str, Any]:
     config: Dict[str, Any] = request.app.state.config.read()
     runtime = config.get("runtime", {}) or {}
-    simulate = bool(runtime.get("dry_run", True)) and bool(runtime.get("simulate_fill", False))
+    simulate = bool(runtime.get("dry_run", True))
     name = _exchange_name(config, exchange)
     bots = request.app.state.bot_manager.snapshot()
     runtime_stats: Dict[str, Any] = request.app.state.runtime_stats
     runtime_metrics_cache: Dict[str, Dict[str, Any]] = request.app.state.runtime_metrics_cache
     now_ms = _now_ms()
-    metrics_refresh_ms = max(1000, _safe_int(runtime.get("status_metrics_refresh_ms"), RUNTIME_LIGHTER_METRICS_CACHE_MS))
+    refresh_raw = runtime.get("status_metrics_refresh_ms")
+    if refresh_raw is None or str(refresh_raw).strip() == "":
+        refresh_raw = runtime.get("status_refresh_ms")
+    metrics_refresh_ms = max(1000, _safe_int(refresh_raw, RUNTIME_LIGHTER_METRICS_CACHE_MS))
     updated_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    strategies = config.get("strategies", {}) or {}
 
     running_symbols: list[str] = []
     for symbol, data in bots.items():
-        if isinstance(data, dict) and data.get("running"):
-            running_symbols.append(symbol)
+        if not (isinstance(data, dict) and data.get("running")):
+            continue
+        sym = _normalize_symbol(symbol)
+        strat = strategies.get(sym) or strategies.get(symbol)
+        if isinstance(strat, dict):
+            symbol_exchange = _strategy_exchange(config, strat)
+            if symbol_exchange != name:
+                continue
+        running_symbols.append(sym)
 
     if not running_symbols:
         return {

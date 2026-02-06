@@ -393,6 +393,8 @@ class BotStatus:
     last_tick_at: Optional[str] = None
     message: str = ""
     market_id: Optional[str | int] = None
+    bid: Optional[str] = None
+    ask: Optional[str] = None
     mid: Optional[str] = None
     center: Optional[str] = None
     desired: int = 0
@@ -416,6 +418,8 @@ class BotStatus:
             "last_tick_at": self.last_tick_at,
             "message": self.message,
             "market_id": self.market_id,
+            "bid": self.bid,
+            "ask": self.ask,
             "mid": self.mid,
             "center": self.center,
             "desired": self.desired,
@@ -1607,6 +1611,8 @@ class BotManager:
                             message='stop signal: position unavailable',
                             last_tick_at=_now_iso(),
                             market_id=market_id,
+                            bid=str(bid),
+                            ask=str(ask),
                             mid=str(mid),
                             center=str(center),
                             desired=0,
@@ -1630,6 +1636,8 @@ class BotManager:
                             message='stop signal: position already flat',
                             last_tick_at=_now_iso(),
                             market_id=market_id,
+                            bid=str(bid),
+                            ask=str(ask),
                             mid=str(mid),
                             center=str(center),
                             desired=0,
@@ -1654,6 +1662,8 @@ class BotManager:
                         message='stop signal: taker flatten sent',
                         last_tick_at=_now_iso(),
                         market_id=market_id,
+                        bid=str(bid),
+                        ask=str(ask),
                         mid=str(mid),
                         center=str(center),
                         desired=0,
@@ -2029,6 +2039,8 @@ class BotManager:
                     message=msg,
                     last_tick_at=_now_iso(),
                     market_id=market_id,
+                    bid=str(bid),
+                    ask=str(ask),
                     mid=str(mid),
                     center=str(center),
                     desired=(len(desired_asks) + len(desired_bids)),
