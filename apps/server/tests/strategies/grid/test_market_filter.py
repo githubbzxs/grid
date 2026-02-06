@@ -114,13 +114,22 @@ def test_evaluate_filter_disabled_returns_off() -> None:
     assert decision.timeout_stop is False
 
 
-def test_evaluate_filter_warmup_when_bars_not_enough() -> None:
+def test_evaluate_filter_when_bars_not_enough_uses_previous_state() -> None:
     cfg = MarketFilterConfig(enabled=True, atr_period=14, adx_period=14)
     runtime = MarketFilterRuntime()
     decision = evaluate_market_filter(cfg, runtime, _trend_bars(10), now_ms=5_000_000)
-    assert decision.state == "warmup"
-    assert decision.close_only is True
+    assert decision.state == "pass"
+    assert decision.close_only is False
     assert decision.timeout_stop is False
+    assert decision.reason.startswith("use_prev_data:")
+
+    runtime.state = "block"
+    runtime.reason = "atr_high"
+    runtime.block_started_ms = 4_990_000
+    decision2 = evaluate_market_filter(cfg, runtime, _trend_bars(8), now_ms=5_000_000)
+    assert decision2.state == "block"
+    assert decision2.close_only is True
+    assert decision2.block_seconds >= 10
 
 
 def test_evaluate_filter_block_when_atr_too_low() -> None:
@@ -164,9 +173,10 @@ def test_evaluate_filter_recover_requires_pass_streak() -> None:
         recover_pass_count=2,
     )
     d1 = evaluate_market_filter(pass_cfg, runtime, _trend_bars(80), now_ms=6_060_000)
-    assert d1.state == "warmup"
+    assert d1.state == "block"
     assert d1.close_only is True
     assert d1.pass_streak == 1
+    assert d1.reason == "recovering:1/2"
 
     d2 = evaluate_market_filter(pass_cfg, runtime, _trend_bars(80), now_ms=6_120_000)
     assert d2.state == "pass"

@@ -187,6 +187,39 @@ def evaluate_market_filter(
     bars: list[OhlcBar],
     now_ms: int,
 ) -> MarketFilterDecision:
+    def _decision_from_runtime(reason: str) -> MarketFilterDecision:
+        state = runtime.state
+        if state not in {"pass", "block"}:
+            runtime.state = "pass"
+            runtime.pass_streak = 0
+            runtime.block_started_ms = 0
+            runtime.block_seconds = 0
+        runtime.reason = reason
+
+        close_only = runtime.state == "block"
+        timeout_stop = False
+        if close_only:
+            if runtime.block_started_ms <= 0:
+                runtime.block_started_ms = int(now_ms)
+            runtime.block_seconds = max(0, int((int(now_ms) - runtime.block_started_ms) / 1000))
+            if cfg.block_timeout_minutes > 0:
+                timeout_s = int(cfg.block_timeout_minutes * Decimal(60))
+                timeout_stop = runtime.block_seconds >= timeout_s
+        else:
+            runtime.block_started_ms = 0
+            runtime.block_seconds = 0
+
+        return MarketFilterDecision(
+            state=runtime.state,
+            reason=runtime.reason,
+            atr_pct=runtime.atr_pct,
+            adx=runtime.adx,
+            pass_streak=runtime.pass_streak,
+            block_seconds=runtime.block_seconds,
+            close_only=close_only,
+            timeout_stop=timeout_stop,
+        )
+
     if not cfg.enabled:
         runtime.state = "off"
         runtime.reason = "disabled"
@@ -208,45 +241,15 @@ def evaluate_market_filter(
 
     need = required_bar_count(cfg.atr_period, cfg.adx_period)
     if len(bars) < need:
-        runtime.state = "warmup"
-        runtime.reason = f"warmup:{len(bars)}/{need}"
-        runtime.pass_streak = 0
-        runtime.block_started_ms = 0
-        runtime.block_seconds = 0
-        runtime.atr_pct = None
-        runtime.adx = None
-        return MarketFilterDecision(
-            state=runtime.state,
-            reason=runtime.reason,
-            atr_pct=runtime.atr_pct,
-            adx=runtime.adx,
-            pass_streak=runtime.pass_streak,
-            block_seconds=runtime.block_seconds,
-            close_only=True,
-            timeout_stop=False,
-        )
+        return _decision_from_runtime(f"use_prev_data:{len(bars)}/{need}")
 
     atr_pct = calc_atr_pct(bars, cfg.atr_period)
     adx = calc_adx(bars, cfg.adx_period)
+    if atr_pct is None or adx is None:
+        return _decision_from_runtime("use_prev_indicator")
+
     runtime.atr_pct = atr_pct
     runtime.adx = adx
-
-    if atr_pct is None or adx is None:
-        runtime.state = "warmup"
-        runtime.reason = "indicator_not_ready"
-        runtime.pass_streak = 0
-        runtime.block_started_ms = 0
-        runtime.block_seconds = 0
-        return MarketFilterDecision(
-            state=runtime.state,
-            reason=runtime.reason,
-            atr_pct=runtime.atr_pct,
-            adx=runtime.adx,
-            pass_streak=runtime.pass_streak,
-            block_seconds=runtime.block_seconds,
-            close_only=True,
-            timeout_stop=False,
-        )
 
     block_reasons: list[str] = []
     if atr_pct < cfg.atr_pct_min:
@@ -279,10 +282,10 @@ def evaluate_market_filter(
         )
 
     prev_state = runtime.state
-    if prev_state in {"block", "warmup"}:
+    if prev_state == "block":
         runtime.pass_streak += 1
         if runtime.pass_streak < max(1, cfg.recover_pass_count):
-            runtime.state = "warmup"
+            runtime.state = "block"
             runtime.reason = f"recovering:{runtime.pass_streak}/{max(1, cfg.recover_pass_count)}"
             runtime.block_started_ms = 0
             runtime.block_seconds = 0
