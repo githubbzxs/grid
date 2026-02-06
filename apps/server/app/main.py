@@ -303,6 +303,15 @@ def _safe_decimal(value: Any) -> Decimal:
         return Decimal(0)
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        if value is None:
+            return int(default)
+        return int(str(value).strip())
+    except Exception:
+        return int(default)
+
+
 def _deep_merge(base: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
     merged: Dict[str, Any] = dict(base)
     for key, value in patch.items():
