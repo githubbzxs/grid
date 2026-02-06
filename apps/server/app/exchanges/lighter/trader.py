@@ -57,6 +57,7 @@ class LighterTrader:
         self._min_trade_interval_s = 0.12
         self._retry_limit = 4
         self._retry_base_s = 0.8
+        self._trades_with_account_index = True
         self._logbus = logbus
 
     def _log(self, text: str) -> None:
@@ -88,6 +89,10 @@ class LighterTrader:
 
     def _is_rate_limited(self, exc: Exception) -> bool:
         return self._is_rate_limited_text(str(exc))
+
+    def _is_invalid_param(self, exc: Exception) -> bool:
+        text = str(exc).lower()
+        return "invalid param" in text or "code=20001" in text
 
     def _resp_rate_limited(self, err: Any, resp: Any) -> bool:
         if err and self._is_rate_limited_text(str(err)):
@@ -125,6 +130,20 @@ class LighterTrader:
                 if not rate_limited or attempt >= self._retry_limit - 1:
                     raise
                 await asyncio.sleep(self._rate_limit_delay(attempt))
+
+    async def fetch_trades(self, **kwargs):
+        query: Dict[str, Any] = dict(kwargs)
+        if self._trades_with_account_index:
+            query.setdefault("account_index", int(self.account_index))
+        try:
+            return await self._call_with_retry(self._order_api.trades, **query)
+        except Exception as exc:
+            if self._trades_with_account_index and "account_index" in query and self._is_invalid_param(exc):
+                self._trades_with_account_index = False
+                query.pop("account_index", None)
+                self._log("lighter.trades.param.adjust action=drop_account_index reason=invalid_param")
+                return await self._call_with_retry(self._order_api.trades, **query)
+            raise
 
     def check_client(self) -> Optional[str]:
         return self._signer.check_client()

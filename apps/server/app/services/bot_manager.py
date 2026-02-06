@@ -1997,12 +1997,10 @@ class BotManager:
         pages = 0
         reached_old = False
         while pages < max_pages and not reached_old:
-            resp = await trader._call_with_retry(
-                trader._order_api.trades,
+            resp = await trader.fetch_trades(
                 sort_by="timestamp",
                 limit=100,
                 market_id=int(market_id),
-                account_index=int(trader.account_index),
                 sort_dir="desc",
                 cursor=cursor,
                 auth=auth_token,
@@ -2047,12 +2045,10 @@ class BotManager:
         pages = 0
         processed = 0
         while pages < max_pages:
-            resp = await trader._call_with_retry(
-                trader._order_api.trades,
+            resp = await trader.fetch_trades(
                 sort_by="timestamp",
                 limit=100,
                 market_id=int(market_id),
-                account_index=int(trader.account_index),
                 sort_dir="asc",
                 cursor=cursor,
                 auth=auth_token,
