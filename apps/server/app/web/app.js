@@ -1021,20 +1021,12 @@ function extractMarketFilter(data) {
     "blocked_reason",
   ]);
   const atrPctValue = firstPresentValue(data, [
-    "market_bid",
-    "bid",
-    "best_bid",
-    "bid_price",
     "market_filter_atr_pct",
     "market_filter_atr_percent",
     "filter_atr_pct",
     "atr_pct",
   ]);
   const adxValue = firstPresentValue(data, [
-    "market_ask",
-    "ask",
-    "best_ask",
-    "ask_price",
     "market_filter_adx",
     "filter_adx",
     "adx",
@@ -1049,10 +1041,7 @@ function extractMarketFilter(data) {
     "bad_seconds",
   ]);
 
-  let reasonText = reasonValue == null ? "-" : String(reasonValue);
-  if (reasonText.startsWith("use_prev_data:") || reasonText === "use_prev_indicator") {
-    reasonText = "实时行情直读";
-  }
+  const reasonText = reasonValue == null ? "-" : String(reasonValue);
 
   return {
     status: normalizeFilterStatus(statusValue, enabledValue),
