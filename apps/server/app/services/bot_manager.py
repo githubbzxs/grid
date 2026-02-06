@@ -1341,7 +1341,7 @@ class BotManager:
         self._sim_apply_trade(symbol, side, price, size, _now_ms())
 
     async def _run(self, symbol: str, trader: Trader) -> None:
-        interval_s = 0.01
+        interval_s = 0.5
         try:
             while True:
                 await asyncio.sleep(interval_s)
