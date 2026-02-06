@@ -1021,12 +1021,16 @@ function extractMarketFilter(data) {
     "blocked_reason",
   ]);
   const atrPctValue = firstPresentValue(data, [
+    "market_indicator_atr",
+    "market_atr",
     "market_filter_atr_pct",
     "market_filter_atr_percent",
     "filter_atr_pct",
     "atr_pct",
   ]);
   const adxValue = firstPresentValue(data, [
+    "market_indicator_adx",
+    "market_adx",
     "market_filter_adx",
     "filter_adx",
     "adx",

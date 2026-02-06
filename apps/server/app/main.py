@@ -29,6 +29,7 @@ from app.exchanges.paradex.trader import ParadexTrader
 from app.exchanges.types import Trader
 from app.services.bot_manager import BotManager
 from app.services.history_store import HistoryStore
+from app.services.market_indicators import TradingViewIndicatorService
 from app.strategies.grid.ids import grid_prefix, is_grid_client_order
 
 
@@ -345,14 +346,12 @@ def _runtime_filter_fields(status: Dict[str, Any]) -> Dict[str, Any]:
     atr_value = _first_non_empty(
         status,
         (
+            "market_indicator_atr",
+            "market_atr",
             "filter_atr_pct",
             "market_filter_atr_pct",
             "market_filter_atr_percent",
             "atr_pct",
-            "market_bid",
-            "bid",
-            "best_bid",
-            "bid_price",
         ),
     )
     atr_text = None
@@ -362,13 +361,11 @@ def _runtime_filter_fields(status: Dict[str, Any]) -> Dict[str, Any]:
     adx_value = _first_non_empty(
         status,
         (
+            "market_indicator_adx",
+            "market_adx",
             "filter_adx",
             "market_filter_adx",
             "adx",
-            "market_ask",
-            "ask",
-            "best_ask",
-            "ask_price",
         ),
     )
     adx_text = None
@@ -383,6 +380,33 @@ def _runtime_filter_fields(status: Dict[str, Any]) -> Dict[str, Any]:
         "filter_block_seconds": int(status.get("filter_block_seconds") or 0),
         "filter_pass_streak": int(status.get("filter_pass_streak") or 0),
     }
+
+
+async def _attach_market_indicators(request: Request, rows: Dict[str, Dict[str, Any]]) -> None:
+    service: Optional[TradingViewIndicatorService] = getattr(request.app.state, "market_indicators", None)
+    if service is None or not isinstance(rows, dict):
+        return
+    symbols = sorted({_normalize_symbol(symbol) for symbol, data in rows.items() if isinstance(data, dict)})
+    symbols = [symbol for symbol in symbols if symbol]
+    if not symbols:
+        return
+    values = await service.fetch(symbols)
+    for symbol in symbols:
+        data = rows.get(symbol)
+        if not isinstance(data, dict):
+            continue
+        indicator = values.get(symbol)
+        if indicator is None:
+            continue
+        atr_text = _fmt_decimal(indicator.atr, 6)
+        adx_text = _fmt_decimal(indicator.adx, 4)
+        data["market_indicator_atr"] = atr_text
+        data["market_indicator_adx"] = adx_text
+        data["market_filter_atr_pct"] = atr_text
+        data["market_filter_adx"] = adx_text
+        reason = str(data.get("filter_reason") or "")
+        if reason.startswith("use_prev_data:") or reason == "use_prev_indicator":
+            data["filter_reason"] = "实时行情直读"
 
 
 def _order_field(order: Any, name: str) -> Any:
@@ -704,6 +728,7 @@ async def _startup() -> None:
     app.state.runtime_stats = {}
     app.state.runtime_metrics_cache = {}
     app.state.runtime_lighter_positions_cache = {"ts_ms": 0, "data": {}}
+    app.state.market_indicators = TradingViewIndicatorService(app.state.logbus)
     app.state.logbus.publish("server.start")
 
 
@@ -950,7 +975,9 @@ async def update_config(
 
 @app.get("/api/bots/status")
 async def bots_status(request: Request, _: str = Depends(require_auth)) -> Dict[str, Any]:
-    return {"bots": request.app.state.bot_manager.snapshot()}
+    bots = request.app.state.bot_manager.snapshot()
+    await _attach_market_indicators(request, bots)
+    return {"bots": bots}
 
 
 @app.post("/api/bots/start")
@@ -1219,6 +1246,7 @@ async def runtime_status(
             totals_position += position_notional
             totals_orders += open_orders
 
+        await _attach_market_indicators(request, symbols_data)
         return {
             "exchange": name,
             "updated_at": updated_at,
@@ -1428,6 +1456,7 @@ async def runtime_status(
         totals_position += position_notional
         totals_orders += open_orders
 
+    await _attach_market_indicators(request, symbols_data)
     return {
         "exchange": name,
         "updated_at": updated_at,
