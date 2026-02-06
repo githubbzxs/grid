@@ -405,6 +405,7 @@ class BotManager:
         self._logbus = logbus
         self._config = config
         self._tasks: Dict[str, asyncio.Task[None]] = {}
+        self._task_traders: Dict[str, Trader] = {}
         self._status: Dict[str, BotStatus] = {}
         self._lock = asyncio.Lock()
         self._reduce_mode: Dict[str, bool] = {}
@@ -466,6 +467,7 @@ class BotManager:
                 last_tick_at=None,
                 message="启动中",
             )
+            self._task_traders[symbol] = trader
             self._tasks[symbol] = asyncio.create_task(self._run(symbol, trader))
         self._logbus.publish(f"bot.start symbol={symbol}")
 
@@ -556,8 +558,33 @@ class BotManager:
         self._logbus.publish(f"market.resolve.ok symbol={symbol} exchange={exchange} market_id={market_id}")
         return market_id
 
+    def _resolve_stop_market_id(self, symbol: str, trader: Optional[Trader]) -> Optional[str | int]:
+        symbol = symbol.upper()
+        status = self._status.get(symbol)
+        if status is not None:
+            market_id = status.market_id
+            if market_id is not None and str(market_id).strip():
+                return market_id
+
+        cfg = self._config.read()
+        strategies = cfg.get("strategies", {}) or {}
+        strat = strategies.get(symbol, {}) or {}
+        exchange = _exchange_name(strat.get("exchange") or (cfg.get("exchange", {}) or {}).get("name"))
+        if not exchange:
+            if isinstance(trader, ParadexTrader):
+                exchange = "paradex"
+            elif isinstance(trader, GrvtTrader):
+                exchange = "grvt"
+            else:
+                exchange = "lighter"
+        return _normalize_market_id(exchange, strat.get("market_id"))
+
     async def stop(self, symbol: str) -> None:
         symbol = symbol.upper()
+        task: Optional[asyncio.Task[None]] = None
+        trader: Optional[Trader] = None
+        market_id: Optional[str | int] = None
+
         async with self._lock:
             self._manual_stop.add(symbol)
             self._stop_signal.pop(symbol, None)
@@ -573,25 +600,111 @@ class BotManager:
             if restart_task and not restart_task.done():
                 restart_task.cancel()
             task = self._tasks.get(symbol)
-            if not task:
-                self._status[symbol] = BotStatus(symbol=symbol, running=False, message="已停止")
-                return
-            task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+            trader = self._task_traders.get(symbol)
+            status = self._status.get(symbol)
+            if status is not None:
+                status_market_id = status.market_id
+                if status_market_id is not None and str(status_market_id).strip():
+                    market_id = status_market_id
+            if task:
+                task.cancel()
+
+        if task:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        if market_id is None or (isinstance(market_id, str) and not market_id.strip()):
+            market_id = self._resolve_stop_market_id(symbol, trader)
+
+        await self._force_flatten_on_stop(symbol, trader, market_id)
+
         async with self._lock:
             self._tasks.pop(symbol, None)
+            self._task_traders.pop(symbol, None)
             self._restart_times.pop(symbol, None)
             prev = self._status.get(symbol)
-            self._status[symbol] = BotStatus(symbol=symbol, running=False, message="已停止", started_at=prev.started_at if prev else None)
-        self._logbus.publish(f"bot.stop symbol={symbol}")
+            self._status[symbol] = BotStatus(symbol=symbol, running=False, message='stopped', started_at=prev.started_at if prev else None)
+        self._logbus.publish(f'bot.stop symbol={symbol}')
 
     async def stop_all(self) -> None:
         symbols = list(self._tasks.keys())
         for symbol in symbols:
             await self.stop(symbol)
+
+    async def _force_flatten_on_stop(
+        self,
+        symbol: str,
+        trader: Optional[Trader],
+        market_id: Optional[str | int],
+    ) -> None:
+        if trader is None:
+            self._logbus.publish(f'stop.flatten.skip symbol={symbol} reason=missing_trader')
+            return
+        if market_id is None or (isinstance(market_id, str) and not market_id.strip()):
+            self._logbus.publish(f'stop.flatten.skip symbol={symbol} reason=missing_market_id')
+            return
+
+        cfg = self._config.read()
+        runtime = cfg.get('runtime', {}) or {}
+        simulate = self._sim_enabled(runtime)
+
+        await self._cancel_grid_orders(symbol, trader, market_id, simulate=simulate)
+        if simulate:
+            mid = self.sim_last_mid(symbol)
+            if mid <= 0:
+                try:
+                    bid, ask = await trader.best_bid_ask(market_id)
+                    if bid is not None and ask is not None:
+                        mid = (bid + ask) / 2
+                except Exception as exc:
+                    self._logbus.publish(
+                        f'stop.flatten.mid.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}'
+                    )
+            if mid > 0:
+                self._sim_market_close(symbol, mid)
+                self._logbus.publish(f'stop.flatten.sim.done symbol={symbol} market_id={market_id}')
+            else:
+                self._logbus.publish(f'stop.flatten.sim.skip symbol={symbol} market_id={market_id} reason=missing_mid')
+            return
+
+        try:
+            meta = await trader.market_meta(market_id)
+        except Exception as exc:
+            self._logbus.publish(
+                f'stop.flatten.meta.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}'
+            )
+            return
+
+        clear_step = Decimal(1) / (Decimal(10) ** int(meta.size_decimals))
+        clear_threshold = max(meta.min_base_amount, clear_step)
+
+        for _ in range(3):
+            try:
+                pos_base = await trader.position_base(market_id)
+            except Exception as exc:
+                self._logbus.publish(
+                    f'stop.flatten.position.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}'
+                )
+                return
+            if abs(pos_base) <= clear_threshold:
+                self._logbus.publish(f'stop.flatten.done symbol={symbol} market_id={market_id} remaining={pos_base}')
+                return
+            await self._market_close_position(symbol, trader, market_id, pos_base, meta)
+            await asyncio.sleep(0.2)
+
+        try:
+            remaining = await trader.position_base(market_id)
+        except Exception as exc:
+            self._logbus.publish(
+                f'stop.flatten.position.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}'
+            )
+            return
+        if abs(remaining) <= clear_threshold:
+            self._logbus.publish(f'stop.flatten.done symbol={symbol} market_id={market_id} remaining={remaining}')
+        else:
+            self._logbus.publish(f'stop.flatten.warn symbol={symbol} market_id={market_id} remaining={remaining}')
 
     def snapshot(self) -> Dict[str, Any]:
         return {k: v.to_dict() for k, v in self._status.items()}
@@ -1120,16 +1233,36 @@ class BotManager:
                             self._logbus.publish(f"bot.stop_signal symbol={symbol} reason={stop_reason}")
                         self._stop_check_at[symbol] = now_ms
 
-                if stop_signal and pos_base is not None:
+                if stop_signal:
+                    if pos_base is None:
+                        await self._cancel_grid_orders(symbol, trader, market_id, simulate=simulate)
+                        await self._record_history(trader, [symbol], 'stop_signal', stop_reason)
+                        await self._update_status(
+                            symbol,
+                            running=False,
+                            message='stop signal: position unavailable',
+                            last_tick_at=_now_iso(),
+                            market_id=market_id,
+                            mid=str(mid),
+                            center=str(center),
+                            desired=0,
+                            existing=0,
+                            reduce_mode=reduce_mode,
+                            stop_signal=True,
+                            stop_reason=stop_reason,
+                        )
+                        self._logbus.publish(f'bot.stop.final symbol={symbol} reason=position_unknown')
+                        return
+
                     clear_step = Decimal(1) / (Decimal(10) ** int(meta.size_decimals))
                     clear_threshold = max(meta.min_base_amount, clear_step)
                     if abs(pos_base) <= clear_threshold:
                         await self._cancel_grid_orders(symbol, trader, market_id, simulate=simulate)
-                        await self._record_history(trader, [symbol], "stop_signal", stop_reason)
+                        await self._record_history(trader, [symbol], 'stop_signal', stop_reason)
                         await self._update_status(
                             symbol,
                             running=False,
-                            message="停止信号已触发，仓位已清空",
+                            message='stop signal: position already flat',
                             last_tick_at=_now_iso(),
                             market_id=market_id,
                             mid=str(mid),
@@ -1140,33 +1273,31 @@ class BotManager:
                             stop_signal=True,
                             stop_reason=stop_reason,
                         )
-                        self._logbus.publish(f"bot.stop.final symbol={symbol} reason=position_clear")
+                        self._logbus.publish(f'bot.stop.final symbol={symbol} reason=position_clear')
                         return
 
-                    pnl = await self._position_pnl(trader, market_id, symbol, simulate=simulate)
-                    if pnl is not None and pnl >= 0:
-                        await self._cancel_grid_orders(symbol, trader, market_id, simulate=simulate)
-                        if simulate_fill:
-                            self._sim_market_close(symbol, mid)
-                        elif not simulate:
-                            await self._market_close_position(symbol, trader, market_id, pos_base, meta)
-                        await self._record_history(trader, [symbol], "stop_signal", stop_reason)
-                        await self._update_status(
-                            symbol,
-                            running=False,
-                            message="停止信号已触发，盈亏>=0 市价全平",
-                            last_tick_at=_now_iso(),
-                            market_id=market_id,
-                            mid=str(mid),
-                            center=str(center),
-                            desired=0,
-                            existing=0,
-                            reduce_mode=reduce_mode,
-                            stop_signal=True,
-                            stop_reason=stop_reason,
-                        )
-                        self._logbus.publish(f"bot.stop.final symbol={symbol} reason=market_close")
-                        return
+                    await self._cancel_grid_orders(symbol, trader, market_id, simulate=simulate)
+                    if simulate:
+                        self._sim_market_close(symbol, mid)
+                    else:
+                        await self._market_close_position(symbol, trader, market_id, pos_base, meta)
+                    await self._record_history(trader, [symbol], 'stop_signal', stop_reason)
+                    await self._update_status(
+                        symbol,
+                        running=False,
+                        message='stop signal: taker flatten sent',
+                        last_tick_at=_now_iso(),
+                        market_id=market_id,
+                        mid=str(mid),
+                        center=str(center),
+                        desired=0,
+                        existing=0,
+                        reduce_mode=reduce_mode,
+                        stop_signal=True,
+                        stop_reason=stop_reason,
+                    )
+                    self._logbus.publish(f'bot.stop.final symbol={symbol} reason=market_close')
+                    return
 
                 prefix = grid_prefix(trader.account_key, market_id, symbol)
                 if simulate:
@@ -1621,7 +1752,7 @@ class BotManager:
             resp = await trader._call_with_retry(
                 trader._order_api.trades,
                 sort_by="timestamp",
-                limit=200,
+                limit=100,
                 market_id=int(market_id),
                 account_index=int(trader.account_index),
                 sort_dir="asc",

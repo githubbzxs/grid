@@ -629,6 +629,13 @@ async def _startup() -> None:
 
 @app.on_event("shutdown")
 async def _shutdown() -> None:
+    manager: Optional[BotManager] = getattr(app.state, "bot_manager", None)
+    if manager:
+        try:
+            await manager.stop_all()
+        except Exception as exc:
+            app.state.logbus.publish(f"shutdown.stop_all.error err={type(exc).__name__}:{exc}")
+
     trader: Optional[LighterTrader] = getattr(app.state, "lighter_trader", None)
     if trader:
         await trader.close()
