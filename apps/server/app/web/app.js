@@ -1041,7 +1041,10 @@ function extractMarketFilter(data) {
     "bad_seconds",
   ]);
 
-  const reasonText = reasonValue == null ? "-" : String(reasonValue);
+  let reasonText = reasonValue == null ? "-" : String(reasonValue);
+  if (reasonText.startsWith("use_prev_data:") || reasonText === "use_prev_indicator") {
+    reasonText = "实时行情直读";
+  }
 
   return {
     status: normalizeFilterStatus(statusValue, enabledValue),

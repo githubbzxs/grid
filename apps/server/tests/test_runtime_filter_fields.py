@@ -35,7 +35,7 @@ def test_runtime_filter_fields_fallback_to_filter_values() -> None:
     assert fields["filter_adx"] == "12.3457"
 
 
-def test_runtime_filter_fields_with_only_bid_ask_should_not_fill_atr_adx() -> None:
+def test_runtime_filter_fields_with_only_bid_ask_should_fallback() -> None:
     status = {
         "filter_state": "pass",
         "filter_reason": "ok",
@@ -44,5 +44,5 @@ def test_runtime_filter_fields_with_only_bid_ask_should_not_fill_atr_adx() -> No
     }
 
     fields = _runtime_filter_fields(status)
-    assert fields["filter_atr_pct"] is None
-    assert fields["filter_adx"] is None
+    assert fields["filter_atr_pct"] == "2456.100000"
+    assert fields["filter_adx"] == "2456.2000"

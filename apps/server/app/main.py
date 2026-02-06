@@ -342,12 +342,35 @@ def _runtime_filter_fields(status: Dict[str, Any]) -> Dict[str, Any]:
     state = str(status.get("filter_state") or "off")
     reason = str(status.get("filter_reason") or "")
 
-    atr_value = _first_non_empty(status, ("filter_atr_pct", "market_filter_atr_pct", "market_filter_atr_percent", "atr_pct"))
+    atr_value = _first_non_empty(
+        status,
+        (
+            "filter_atr_pct",
+            "market_filter_atr_pct",
+            "market_filter_atr_percent",
+            "atr_pct",
+            "market_bid",
+            "bid",
+            "best_bid",
+            "bid_price",
+        ),
+    )
     atr_text = None
     if atr_value is not None and str(atr_value).strip():
         atr_text = _fmt_decimal(_safe_decimal(atr_value), 6)
 
-    adx_value = _first_non_empty(status, ("filter_adx", "market_filter_adx", "adx"))
+    adx_value = _first_non_empty(
+        status,
+        (
+            "filter_adx",
+            "market_filter_adx",
+            "adx",
+            "market_ask",
+            "ask",
+            "best_ask",
+            "ask_price",
+        ),
+    )
     adx_text = None
     if adx_value is not None and str(adx_value).strip():
         adx_text = _fmt_decimal(_safe_decimal(adx_value), 4)
