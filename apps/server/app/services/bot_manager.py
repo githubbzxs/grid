@@ -633,6 +633,9 @@ class BotManager:
         for symbol in symbols:
             await self.stop(symbol)
 
+    async def force_flatten_symbol(self, symbol: str, trader: Trader, market_id: str | int) -> None:
+        await self._force_flatten_on_stop(symbol.upper(), trader, market_id)
+
     async def _force_flatten_on_stop(
         self,
         symbol: str,

@@ -910,77 +910,91 @@ async def bots_stop(body: BotSymbolsBody, request: Request, _: str = Depends(req
 @app.post("/api/bots/emergency_stop")
 async def bots_emergency_stop(request: Request, _: str = Depends(require_auth)) -> Dict[str, Any]:
     config: Dict[str, Any] = request.app.state.config.read()
-    exchange_name = _exchange_name(config)
-    bots = request.app.state.bot_manager.snapshot()
+    manager: BotManager = request.app.state.bot_manager
+    bots = manager.snapshot()
     running_symbols = [s for s, data in bots.items() if isinstance(data, dict) and data.get("running")]
-    trader: Optional[Trader]
-    if exchange_name == "paradex":
-        trader = request.app.state.paradex_trader
-    elif exchange_name == "grvt":
-        trader = request.app.state.grvt_trader
-    else:
-        trader = request.app.state.lighter_trader
+    strategies = config.get("strategies", {}) or {}
+    trader_cache: Dict[str, Trader] = {}
 
-    if trader is None:
-        try:
-            trader = await _ensure_trader(request, exchange_name)
-        except Exception as exc:
-            request.app.state.logbus.publish(f"emergency.init.error exchange={exchange_name} err={type(exc).__name__}:{exc}")
-            trader = None
+    async def _load_trader(exchange_name: str) -> Optional[Trader]:
+        cached = trader_cache.get(exchange_name)
+        if cached is not None:
+            return cached
+        trader: Optional[Trader]
+        if exchange_name == "paradex":
+            trader = request.app.state.paradex_trader
+        elif exchange_name == "grvt":
+            trader = request.app.state.grvt_trader
+        else:
+            trader = request.app.state.lighter_trader
+        if trader is None:
+            try:
+                trader = await _ensure_trader(request, exchange_name)
+            except Exception as exc:
+                request.app.state.logbus.publish(
+                    f"emergency.init.error exchange={exchange_name} err={type(exc).__name__}:{exc}"
+                )
+                return None
+        trader_cache[exchange_name] = trader
+        return trader
 
-    if trader:
+    running_by_exchange: Dict[str, list[str]] = {}
+    for symbol in running_symbols:
+        strat = strategies.get(symbol)
+        if not isinstance(strat, dict):
+            strat = {}
+        name = _strategy_exchange(config, strat)
+        running_by_exchange.setdefault(name, []).append(_normalize_symbol(symbol))
+
+    for exchange_name, symbols in running_by_exchange.items():
+        trader = await _load_trader(exchange_name)
+        if trader is None or not symbols:
+            continue
         try:
-            await request.app.state.bot_manager.capture_history(trader, running_symbols, "emergency_stop")
+            await manager.capture_history(trader, symbols, "emergency_stop")
         except Exception as exc:
             request.app.state.logbus.publish(f"history.capture.error err={type(exc).__name__}:{exc}")
 
-    await request.app.state.bot_manager.stop_all()
+    await manager.stop_all()
     request.app.state.runtime_stats = {}
     canceled: Dict[str, int] = {}
+    flattened: list[str] = []
+    failed: Dict[str, str] = {}
 
-    if trader is None:
-        request.app.state.logbus.publish("bots.emergency_stop")
-        return {"ok": True, "canceled": canceled, "bots": request.app.state.bot_manager.snapshot()}
-
-    strategies = config.get("strategies", {}) or {}
     for symbol, strat in strategies.items():
         if not isinstance(strat, dict):
             continue
-        market_id = strat.get("market_id")
+        sym = _normalize_symbol(symbol)
+        if not sym:
+            continue
+        exchange_name = _strategy_exchange(config, strat)
+        market_id = _normalize_market_id(exchange_name, strat.get("market_id"))
         if market_id is None or (isinstance(market_id, str) and not market_id.strip()):
+            failed[sym] = "missing_market_id"
+            request.app.state.logbus.publish(f"emergency.flatten.skip symbol={sym} reason=missing_market_id")
+            continue
+
+        trader = await _load_trader(exchange_name)
+        if trader is None:
+            failed[sym] = "missing_trader"
             continue
         try:
-            orders = await trader.active_orders(market_id)
+            await manager.force_flatten_symbol(sym, trader, market_id)
+            flattened.append(sym)
         except Exception as exc:
-            request.app.state.logbus.publish(f"emergency.list.error symbol={symbol} err={type(exc).__name__}:{exc}")
-            continue
+            failed[sym] = f"{type(exc).__name__}:{exc}"
+            request.app.state.logbus.publish(
+                f"emergency.flatten.error symbol={sym} market_id={market_id} err={type(exc).__name__}:{exc}"
+            )
 
-        prefix = grid_prefix(trader.account_key, market_id, symbol)
-        targets: list[tuple[Any, int]] = []
-        for o in orders:
-            cid = _order_client_id(o)
-            if cid is None or cid <= 0:
-                continue
-            if not is_grid_client_order(prefix, cid):
-                continue
-            oid = _order_id(o)
-            if oid is None:
-                continue
-            if isinstance(oid, int) and oid <= 0:
-                continue
-            targets.append((oid, cid))
-
-        count = 0
-        for oid, cid in targets[:200]:
-            try:
-                await trader.cancel_order(market_id, oid)
-                count += 1
-            except Exception as exc:
-                request.app.state.logbus.publish(f"emergency.cancel.error symbol={symbol} id={cid} err={type(exc).__name__}:{exc}")
-        if count:
-            canceled[symbol] = count
     request.app.state.logbus.publish("bots.emergency_stop")
-    return {"ok": True, "canceled": canceled, "bots": request.app.state.bot_manager.snapshot()}
+    return {
+        "ok": True,
+        "canceled": canceled,
+        "flattened": sorted(set(flattened)),
+        "failed": failed,
+        "bots": manager.snapshot(),
+    }
 
 
 @app.get("/api/logs/recent")
