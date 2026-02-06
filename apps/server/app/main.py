@@ -865,21 +865,19 @@ async def bots_status(request: Request, _: str = Depends(require_auth)) -> Dict[
 @app.post("/api/bots/start")
 async def bots_start(body: BotSymbolsBody, request: Request, _: str = Depends(require_unlocked)) -> Dict[str, Any]:
     config: Dict[str, Any] = request.app.state.config.read()
-    exchange_name = _exchange_name(config)
     symbols = [s for s in (_normalize_symbol(x) for x in body.symbols) if s]
     if await _fill_strategy_market_ids(request, config, symbols=set(symbols)):
         request.app.state.config.write(config)
-    trader = await _ensure_trader(request, exchange_name)
     runtime_stats: Dict[str, Any] = request.app.state.runtime_stats
+    trader_cache: Dict[str, Trader] = {}
     now_ms = _now_ms()
     for sym in symbols:
         strat = (config.get("strategies", {}) or {}).get(sym, {}) or {}
-        strat_exchange = str(strat.get("exchange") or "").strip().lower()
-        if strat_exchange and strat_exchange != exchange_name:
-            request.app.state.logbus.publish(
-                f"bot.start.skip symbol={sym} exchange={exchange_name} reason=exchange_mismatch strat_exchange={strat_exchange}"
-            )
-            continue
+        exchange_name = _strategy_exchange(config, strat)
+        trader = trader_cache.get(exchange_name)
+        if trader is None:
+            trader = await _ensure_trader(request, exchange_name)
+            trader_cache[exchange_name] = trader
         runtime_stats[sym] = {"exchange": exchange_name, "start_ms": now_ms, "base_pnl": None}
         await request.app.state.bot_manager.start(sym, trader)
     return {"ok": True, "bots": request.app.state.bot_manager.snapshot()}

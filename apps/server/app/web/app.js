@@ -472,6 +472,10 @@ function getCurrentStrategySymbols() {
     .filter(Boolean);
 }
 
+function getAllStrategySymbols() {
+  return currentStrategies.map((item) => normalizeSymbol(item.symbol)).filter(Boolean);
+}
+
 function mergeSymbols(...lists) {
   const result = [];
   const seen = new Set();
@@ -1023,7 +1027,7 @@ async function startAll() {
   if (!dryRun) {
     if (!confirm("当前为实盘模式，会真实下单。确认启动吗？")) return;
   }
-  const symbols = getCurrentStrategySymbols();
+  const symbols = getAllStrategySymbols();
   if (!symbols.length) {
     alert("请先配置策略币对。");
     return;
@@ -1033,7 +1037,7 @@ async function startAll() {
 }
 
 async function stopAll() {
-  const symbols = getCurrentStrategySymbols();
+  const symbols = getAllStrategySymbols();
   if (!symbols.length) {
     alert("请先配置策略币对。");
     return;
