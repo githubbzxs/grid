@@ -29,7 +29,7 @@ def default_config() -> dict[str, Any]:
         "runtime": {
             "dry_run": True,
             "simulate_fill": False,
-            "status_refresh_ms": 1000,
+            "status_refresh_ms": 10000,
             "auto_restart": True,
             "restart_delay_ms": 1000,
             "restart_max": 5,

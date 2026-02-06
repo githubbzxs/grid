@@ -773,7 +773,7 @@ function fillConfig(cfg) {
   }
   syncSimulateFillState();
   if (els.runtimeStatusInterval) {
-    setFieldValue(els.runtimeStatusInterval, rt.status_refresh_ms == null ? "1000" : rt.status_refresh_ms);
+    setFieldValue(els.runtimeStatusInterval, rt.status_refresh_ms == null ? "10000" : rt.status_refresh_ms);
   }
   if (els.runtimeAutoRestart) {
     const autoRestart = rt.auto_restart == null ? true : Boolean(rt.auto_restart);
@@ -869,7 +869,7 @@ async function saveStrategies() {
   const runtime = {
     dry_run: dryRun,
     simulate_fill: dryRun && simulateFill,
-    status_refresh_ms: Math.floor(numOrZero(els.runtimeStatusInterval ? els.runtimeStatusInterval.value : 0)) || 1000,
+    status_refresh_ms: Math.floor(numOrZero(els.runtimeStatusInterval ? els.runtimeStatusInterval.value : 0)) || 10000,
     auto_restart: els.runtimeAutoRestart ? els.runtimeAutoRestart.value === "true" : true,
     restart_delay_ms: Math.floor(numOrZero(els.runtimeRestartDelay ? els.runtimeRestartDelay.value : 0)),
     restart_max: Math.floor(numOrZero(els.runtimeRestartMax ? els.runtimeRestartMax.value : 0)),
@@ -1144,7 +1144,7 @@ function startRuntimeLoop() {
     clearInterval(runtimeTimer);
     runtimeTimer = null;
   }
-  const interval = Math.max(200, Math.floor(numOrZero(els.runtimeStatusInterval ? els.runtimeStatusInterval.value : 1000)));
+  const interval = Math.max(200, Math.floor(numOrZero(els.runtimeStatusInterval ? els.runtimeStatusInterval.value : 10000)));
   runtimeTimer = setInterval(async () => {
     if (authState.authenticated && authState.unlocked) {
       try {
