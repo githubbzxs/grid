@@ -312,6 +312,24 @@ def _unique_prices(values: list[Decimal]) -> list[Decimal]:
     return result
 
 
+def _split_cancel_keep_by_target(
+    orders_by_price: Dict[Decimal, list[Any]],
+    target_prices: set[Decimal],
+) -> tuple[list[tuple[Any, Decimal]], set[Decimal]]:
+    cancel_orders: list[tuple[Any, Decimal]] = []
+    keep_prices: set[Decimal] = set()
+    for price, orders in orders_by_price.items():
+        if price in target_prices and orders:
+            keep_prices.add(price)
+            if len(orders) > 1:
+                for extra in orders[1:]:
+                    cancel_orders.append((extra, price))
+            continue
+        for order in orders:
+            cancel_orders.append((order, price))
+    return cancel_orders, keep_prices
+
+
 def _order_client_id(order: Any) -> Optional[int]:
     for key in ("client_order_index", "client_id", "client_order_id", "clientOrderId"):
         value = _order_field(order, key)
@@ -1758,22 +1776,9 @@ class BotManager:
                             continue
                         for o in orders:
                             cancel_orders.append((o, price))
-                elif desired_asks:
-                    ask_max = max(desired_asks)
-                    for price, orders in asks_by_price.items():
-                        if price in desired_ask_set:
-                            keep_ask_prices.add(price)
-                            if len(orders) > 1:
-                                for extra in orders[1:]:
-                                    cancel_orders.append((extra, price))
-                            continue
-                        if price > ask_max:
-                            for o in orders:
-                                cancel_orders.append((o, price))
                 else:
-                    for price, orders in asks_by_price.items():
-                        for o in orders:
-                            cancel_orders.append((o, price))
+                    dynamic_cancel, keep_ask_prices = _split_cancel_keep_by_target(asks_by_price, desired_ask_set)
+                    cancel_orders.extend(dynamic_cancel)
 
                 keep_bid_prices: set[Decimal] = set()
                 if grid_mode == GRID_MODE_AS:
@@ -1787,22 +1792,9 @@ class BotManager:
                             continue
                         for o in orders:
                             cancel_orders.append((o, price))
-                elif desired_bids:
-                    bid_min = min(desired_bids)
-                    for price, orders in bids_by_price.items():
-                        if price in desired_bid_set:
-                            keep_bid_prices.add(price)
-                            if len(orders) > 1:
-                                for extra in orders[1:]:
-                                    cancel_orders.append((extra, price))
-                            continue
-                        if price < bid_min:
-                            for o in orders:
-                                cancel_orders.append((o, price))
                 else:
-                    for price, orders in bids_by_price.items():
-                        for o in orders:
-                            cancel_orders.append((o, price))
+                    dynamic_cancel, keep_bid_prices = _split_cancel_keep_by_target(bids_by_price, desired_bid_set)
+                    cancel_orders.extend(dynamic_cancel)
 
                 missing_ask_prices = [p for p in desired_asks if p not in keep_ask_prices]
                 missing_bid_prices = [p for p in desired_bids if p not in keep_bid_prices]
