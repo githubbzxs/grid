@@ -33,6 +33,8 @@ from app.strategies.grid.ids import grid_prefix, is_grid_client_order
 
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
+RUNTIME_LIGHTER_POSITIONS_CACHE_MS = 2000
+RUNTIME_LIGHTER_METRICS_CACHE_MS = 5000
 
 
 class PasswordBody(BaseModel):
@@ -269,6 +271,17 @@ def _secret_fingerprint(value: Optional[str]) -> Optional[str]:
 
 def _now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _is_rate_limited_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return (
+        "too many requests" in text
+        or "rate limit" in text
+        or "code=23000" in text
+        or "\"code\": 23000" in text
+        or "(429)" in text
+    )
 
 
 def _parse_iso_ms(value: Optional[str]) -> Optional[int]:
@@ -646,6 +659,8 @@ async def _startup() -> None:
     app.state.grvt_trader = None
     app.state.grvt_trader_sig = None
     app.state.runtime_stats = {}
+    app.state.runtime_metrics_cache = {}
+    app.state.runtime_lighter_positions_cache = {"ts_ms": 0, "data": {}}
     app.state.logbus.publish("server.start")
 
 
@@ -876,12 +891,16 @@ async def update_config(
     request.app.state.config.write(merged)
     if removed_symbols:
         runtime_stats: Dict[str, Any] = request.app.state.runtime_stats
+        runtime_metrics_cache: Dict[str, Any] = request.app.state.runtime_metrics_cache
         for symbol in removed_symbols:
             try:
                 await request.app.state.bot_manager.stop(symbol)
             except Exception:
                 pass
             runtime_stats.pop(symbol, None)
+            runtime_metrics_cache.pop(f"lighter:{symbol}", None)
+            runtime_metrics_cache.pop(f"paradex:{symbol}", None)
+            runtime_metrics_cache.pop(f"grvt:{symbol}", None)
     request.app.state.logbus.publish("config.update")
     return {"ok": True, "config": _mask_config(merged)}
 
@@ -898,6 +917,7 @@ async def bots_start(body: BotSymbolsBody, request: Request, _: str = Depends(re
     if await _fill_strategy_market_ids(request, config, symbols=set(symbols)):
         request.app.state.config.write(config)
     runtime_stats: Dict[str, Any] = request.app.state.runtime_stats
+    runtime_metrics_cache: Dict[str, Any] = request.app.state.runtime_metrics_cache
     trader_cache: Dict[str, Trader] = {}
     now_ms = _now_ms()
     for sym in symbols:
@@ -908,6 +928,7 @@ async def bots_start(body: BotSymbolsBody, request: Request, _: str = Depends(re
             trader = await _ensure_trader(request, exchange_name)
             trader_cache[exchange_name] = trader
         runtime_stats[sym] = {"exchange": exchange_name, "start_ms": now_ms, "base_pnl": None}
+        runtime_metrics_cache.pop(f"{exchange_name}:{sym}", None)
         await request.app.state.bot_manager.start(sym, trader)
     return {"ok": True, "bots": request.app.state.bot_manager.snapshot()}
 
@@ -922,10 +943,14 @@ async def bots_stop(body: BotSymbolsBody, request: Request, _: str = Depends(req
     except Exception as exc:
         request.app.state.logbus.publish(f"history.capture.error err={type(exc).__name__}:{exc}")
     runtime_stats: Dict[str, Any] = request.app.state.runtime_stats
+    runtime_metrics_cache: Dict[str, Any] = request.app.state.runtime_metrics_cache
     for symbol in body.symbols:
         sym = symbol.upper()
         await request.app.state.bot_manager.stop(sym)
         runtime_stats.pop(sym, None)
+        runtime_metrics_cache.pop(f"lighter:{sym}", None)
+        runtime_metrics_cache.pop(f"paradex:{sym}", None)
+        runtime_metrics_cache.pop(f"grvt:{sym}", None)
     return {"ok": True, "bots": request.app.state.bot_manager.snapshot()}
 
 
@@ -979,6 +1004,8 @@ async def bots_emergency_stop(request: Request, _: str = Depends(require_auth)) 
 
     await manager.stop_all()
     request.app.state.runtime_stats = {}
+    request.app.state.runtime_metrics_cache = {}
+    request.app.state.runtime_lighter_positions_cache = {"ts_ms": 0, "data": {}}
     canceled: Dict[str, int] = {}
     flattened: list[str] = []
     failed: Dict[str, str] = {}
@@ -1051,7 +1078,9 @@ async def runtime_status(
     name = _exchange_name(config, exchange)
     bots = request.app.state.bot_manager.snapshot()
     runtime_stats: Dict[str, Any] = request.app.state.runtime_stats
+    runtime_metrics_cache: Dict[str, Dict[str, Any]] = request.app.state.runtime_metrics_cache
     now_ms = _now_ms()
+    metrics_refresh_ms = max(1000, _safe_int(runtime.get("status_metrics_refresh_ms"), RUNTIME_LIGHTER_METRICS_CACHE_MS))
     updated_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
     running_symbols: list[str] = []
@@ -1163,7 +1192,27 @@ async def runtime_status(
     elif name == "grvt" and isinstance(trader, GrvtTrader):
         positions_map = await _grvt_positions_map(trader)
     elif isinstance(trader, LighterTrader):
-        positions_map = await _lighter_positions_map(trader)
+        cache = request.app.state.runtime_lighter_positions_cache
+        if not isinstance(cache, dict):
+            cache = {"ts_ms": 0, "data": {}}
+            request.app.state.runtime_lighter_positions_cache = cache
+        cached_ts = _safe_int(cache.get("ts_ms"), 0)
+        cached_data = cache.get("data")
+        if not isinstance(cached_data, dict):
+            cached_data = {}
+        if (now_ms - cached_ts) >= RUNTIME_LIGHTER_POSITIONS_CACHE_MS:
+            try:
+                cached_data = await _lighter_positions_map(trader)
+                cache["data"] = cached_data
+                cache["ts_ms"] = now_ms
+            except Exception as exc:
+                if _is_rate_limited_error(exc):
+                    request.app.state.logbus.publish("runtime.positions.rate_limited exchange=lighter")
+                else:
+                    request.app.state.logbus.publish(
+                        f"runtime.positions.error exchange=lighter err={type(exc).__name__}:{exc}"
+                    )
+        positions_map = cached_data
     else:
         positions_map = {}
 
@@ -1202,13 +1251,22 @@ async def runtime_status(
                 pass
 
         mid_value = _safe_decimal(status.get("mid") or 0)
-        if mid_value <= 0 and market_id is not None:
+        if mid_value <= 0 and market_id is not None and not isinstance(trader, LighterTrader):
             try:
                 bid, ask = await trader.best_bid_ask(market_id)
                 if bid is not None and ask is not None:
                     mid_value = (bid + ask) / 2
             except Exception:
                 mid_value = Decimal(0)
+
+        cache_key = f"{name}:{symbol}"
+        cache_item_raw = runtime_metrics_cache.get(cache_key)
+        cache_item = cache_item_raw if isinstance(cache_item_raw, dict) else {}
+        cache_updated_ms = _safe_int(cache_item.get("updated_ms"), 0)
+        cache_fresh = (now_ms - cache_updated_ms) < metrics_refresh_ms
+        cache_profit = _safe_decimal(cache_item.get("profit"))
+        cache_volume = _safe_decimal(cache_item.get("volume"))
+        cache_trade_count = _safe_int(cache_item.get("trade_count"), 0)
 
         pnl_now = Decimal(0)
         pos_base = Decimal(0)
@@ -1221,19 +1279,28 @@ async def runtime_status(
 
         if name == "lighter" and isinstance(trader, LighterTrader) and isinstance(market_id, int):
             use_base = False
-            try:
-                pnl_now = await request.app.state.bot_manager.lighter_trade_pnl(
-                    trader,
-                    symbol,
-                    int(market_id),
-                    start_ms,
-                    now_ms,
-                    mid_value,
-                )
-            except Exception as exc:
-                request.app.state.logbus.publish(
-                    f"runtime.pnl.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}"
-                )
+            if cache_fresh:
+                pnl_now = cache_profit
+            else:
+                try:
+                    pnl_now = await request.app.state.bot_manager.lighter_trade_pnl(
+                        trader,
+                        symbol,
+                        int(market_id),
+                        start_ms,
+                        now_ms,
+                        mid_value,
+                    )
+                except Exception as exc:
+                    if _is_rate_limited_error(exc):
+                        request.app.state.logbus.publish(
+                            f"runtime.pnl.rate_limited symbol={symbol} market_id={market_id} cached=1"
+                        )
+                    else:
+                        request.app.state.logbus.publish(
+                            f"runtime.pnl.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}"
+                        )
+                    pnl_now = cache_profit
 
         if use_base:
             if entry.get("base_pnl") is None:
@@ -1244,17 +1311,42 @@ async def runtime_status(
 
         volume = Decimal(0)
         trade_count = 0
-        try:
-            if name == "paradex" and isinstance(trader, ParadexTrader) and market_id is not None:
-                volume, trade_count = _paradex_fills_since(trader, str(market_id), start_ms, now_ms)
-            elif name == "grvt" and isinstance(trader, GrvtTrader) and market_id is not None:
-                volume, trade_count = await _grvt_trades_since(trader, str(market_id), start_ms, now_ms)
-            elif isinstance(trader, LighterTrader) and isinstance(market_id, int):
-                volume, trade_count = await _lighter_trades_since(trader, int(market_id), start_ms)
-        except Exception as exc:
-            request.app.state.logbus.publish(
-                f"runtime.trades.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}"
-            )
+        if isinstance(trader, LighterTrader) and isinstance(market_id, int):
+            if cache_fresh:
+                volume = cache_volume
+                trade_count = cache_trade_count
+            else:
+                try:
+                    volume, trade_count = await _lighter_trades_since(trader, int(market_id), start_ms)
+                except Exception as exc:
+                    if _is_rate_limited_error(exc):
+                        request.app.state.logbus.publish(
+                            f"runtime.trades.rate_limited symbol={symbol} market_id={market_id} cached=1"
+                        )
+                    else:
+                        request.app.state.logbus.publish(
+                            f"runtime.trades.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}"
+                        )
+                    volume = cache_volume
+                    trade_count = cache_trade_count
+        else:
+            try:
+                if name == "paradex" and isinstance(trader, ParadexTrader) and market_id is not None:
+                    volume, trade_count = _paradex_fills_since(trader, str(market_id), start_ms, now_ms)
+                elif name == "grvt" and isinstance(trader, GrvtTrader) and market_id is not None:
+                    volume, trade_count = await _grvt_trades_since(trader, str(market_id), start_ms, now_ms)
+            except Exception as exc:
+                request.app.state.logbus.publish(
+                    f"runtime.trades.error symbol={symbol} market_id={market_id} err={type(exc).__name__}:{exc}"
+                )
+
+        if name == "lighter":
+            runtime_metrics_cache[cache_key] = {
+                "updated_ms": now_ms,
+                "profit": str(profit),
+                "volume": str(volume),
+                "trade_count": int(trade_count),
+            }
 
         position_notional = abs(pos_base * mid_value) if mid_value > 0 else Decimal(0)
         open_orders = int(status.get("existing") or 0)
